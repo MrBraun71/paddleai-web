@@ -200,6 +200,10 @@ function currentPosture(side: 'left' | 'right'): PostureState {
     : Number.NaN
   // Leg flexion reads "compressed = 0" from raw knee height, so invert it.
   const pLeg = Number.isNaN(pLegRaw) ? Number.NaN : 1 - pLegRaw
+  const pLegRawPrev = legVals.length >= MIN_SAMPLES
+    ? normalizeRange(legVals, lagValue(legVals, TREND_LAG, legVals[legVals.length - 1]), MIN_LEG_RANGE)
+    : Number.NaN
+  const legPrev = Number.isNaN(pLegRawPrev) ? Number.NaN : 1 - pLegRawPrev
 
   return {
     pArm,
@@ -208,9 +212,7 @@ function currentPosture(side: 'left' | 'right'): PostureState {
     armPrev: armVals.length >= MIN_SAMPLES
       ? normalizeRange(armVals, lagValue(armVals, TREND_LAG, armVals[armVals.length - 1]), MIN_REACH_RANGE)
       : Number.NaN,
-    legPrev: legVals.length >= MIN_SAMPLES
-      ? normalizeRange(legVals, lagValue(legVals, TREND_LAG, legVals[legVals.length - 1]), MIN_LEG_RANGE)
-      : Number.NaN,
+    legPrev,
   }
 }
 
@@ -218,23 +220,42 @@ function currentPosture(side: 'left' | 'right'): PostureState {
  * Professional stroke machine. A phase is decided by the COMBINED posture:
  * only when the arms are extended AND the trunk is folded AND the legs are
  * compressed do we call it a catch (entry). Everything less is drive/pull,
- * broken arm bend = finish (exit), arm re-extension = recovery — the exact
- * "gambe -> busto -> braccia" / reverse sequence from the technique.
+ * broken arm bend = finish (exit), arm re-extension = recovery.
+ *
+ * KEY: once the arms are fully extended the arm trend is useless to tell the
+ * drive from the recovery apart (both hold the arms open), so the LEG trend
+ * discriminates: legs extending = drive (pull), legs compressing = recovery
+ * approaching the catch. If the legs (or trunk) are not tracked, the machine
+ * degrades gracefully to whatever postural channels are available.
  */
 function classifyPhase(p: PostureState): StrokePhase {
   if (!Number.isFinite(p.pArm)) return 'none'
-  if (Number.isNaN(p.pLeg) || Number.isNaN(p.pTrunk)) return 'none'
+  const hasLegs = !Number.isNaN(p.pLeg)
+  const hasTrunk = !Number.isNaN(p.pTrunk)
+  if (!hasLegs && !hasTrunk) return 'none'
 
-  if (p.pArm >= ARM_EXTENDED && p.pLeg >= LEG_COMPRESSED && p.pTrunk >= TRUNK_FOLDED) {
-    return 'entry'
-  }
-  if (p.pArm >= ARM_EXTENDED) return 'pull'
+  const catchPose =
+    (hasLegs ? p.pLeg >= LEG_COMPRESSED : true) &&
+    (hasTrunk ? p.pTrunk >= TRUNK_FOLDED : true)
+
+  if (p.pArm >= ARM_EXTENDED && catchPose) return 'entry'
   if (p.pArm <= ARM_BENT) return 'exit'
 
-  // Arms are moving: opening -> recovery, closing -> pull.
+  // Arms fully extended but not yet a catch: which direction are the legs
+  // going? Extending = pushing (drive), compressing = heading back to catch.
+  if (p.pArm >= ARM_EXTENDED) {
+    if (hasLegs) {
+      const legDelta = p.pLeg - p.legPrev
+      if (legDelta >= 0.06) return 'recovery'
+      if (legDelta <= -0.06) return 'pull'
+    }
+    return state.currentPhase === 'pull' ? 'pull' : 'recovery'
+  }
+
+  // Arms between finish and extension: follow the arm trend.
   if (p.pArm - p.armPrev >= 0.08) return 'recovery'
   if (p.pArm - p.armPrev <= -0.08) return 'pull'
-  return 'none'
+  return state.currentPhase === 'pull' ? 'pull' : 'recovery'
 }
 
 function flagArmsFirst(p: PostureState): void {
