@@ -90,11 +90,18 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   const [feedbackMsg, setFeedbackMsg] = useState<FeedbackMessage | null>(null)
 
   // ---- Diagnostic state (helps identify "no skeleton" root cause) ----
-  const [debug, setDebug] = useState<{ lm: number; vs: string; fps: number }>({
-    lm: -1,
-    vs: '?',
-    fps: 0,
-  })
+  const [debug, setDebug] = useState<{
+    lm: number
+    vs: string
+    fps: number
+    app: string
+    model: string
+    detMs: number
+  }>({ lm: -1, vs: '?', fps: 0, app: 'init', model: '-', detMs: 0 })
+
+  // Ref mirror of appState for the debug ticker inside the rAF loop
+  const appStateRef = useRef(appState)
+  appStateRef.current = appState
 
   const rafRef = useRef<number | null>(null)
   const lastVideoTimeRef = useRef(-1)
@@ -206,7 +213,11 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               })
               if (cancelled) return
               landmarkerRef.current = lm
-              setDebug((d) => ({ ...d, lm: -1, vs: d.vs, fps: d.fps }))
+              setDebug((d) => ({
+                ...d,
+                lm: -1,
+                model: `${cand.name}/${delegate}`,
+              }))
               setAppState('ready')
               return
             } catch (e) {
@@ -249,27 +260,46 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         pushUiRef.current()
       }
 
-      // Only run inference on a new video frame, throttled to ~15 fps so the
+      // Always ticking diag (once per second) so we can see the loop is alive,
+      // what readyState the video is in, and the app state — even when the
+      // inference gate below never passes.
+      const s = statsRef.current
+      s.frames++
+      if (time - s.lastT >= 1000) {
+        s.fps = Math.round((s.frames * 1000) / (time - s.lastT))
+        s.frames = 0
+        s.lastT = time
+        setDebug((d) => ({
+          ...d,
+          vs: video.readyState.toString(),
+          fps: s.fps,
+          app: appStateRef.current,
+        }))
+      }
+
+      // Do not run inference for the first ~1s of the feed: the very first
+      // detectForVideo call does GPU/model warm-up and can block the main
+      // thread long enough to stall the webcam. Let it stabilize first.
+      if (performance.now() - engineRef.current.startTime < 800) {
+        rafRef.current = requestAnimationFrame(loop)
+        return
+      }
+
+      // Only run inference on a new video frame, throttled to ~12 fps so the
       // heavy pose model doesn't freeze the webcam feed.
       if (
         video.readyState >= 2 &&
         video.currentTime !== lastVideoTimeRef.current &&
-        time - lastInferTimeRef.current >= 66
+        time - lastInferTimeRef.current >= 83
       ) {
         lastVideoTimeRef.current = video.currentTime
         lastInferTimeRef.current = time
-        const s = statsRef.current
-        s.frames++
-        if (time - s.lastT >= 1000) {
-          s.fps = Math.round((s.frames * 1000) / (time - s.lastT))
-          s.frames = 0
-          s.lastT = time
-          setDebug((d) => ({ ...d, vs: video.readyState.toString(), fps: s.fps }))
-        }
         try {
+          const t0 = performance.now()
           const result = lm.detectForVideo(video, time)
+          const detMs = Math.round(performance.now() - t0)
+          setDebug((d) => (detMs !== d.detMs ? { ...d, detMs } : d))
           if (result && result.landmarks && result.landmarks.length > 0) {
-            statsRef.current.lastLm = result.landmarks.length
             setDebug((d) => ({ ...d, lm: result.landmarks.length }))
             setPoseResult(result)
 
@@ -341,9 +371,12 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
             if (time % 250 < 40) {
               pushUiRef.current(true)
             }
+          } else {
+            setDebug((d) => (d.lm === 0 ? d : { ...d, lm: 0 }))
           }
         } catch (err) {
           console.error('Pose/engine error', err)
+          setDebug((d) => ({ ...d, detMs: -1 }))
         }
       }
 
@@ -367,8 +400,8 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width: { ideal: 480 },
-            height: { ideal: 360 },
+            width: { ideal: 320 },
+            height: { ideal: 240 },
           },
           audio: false,
         })
@@ -533,7 +566,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               playsInline
               muted
               autoPlay
-              className="absolute inset-0 w-full h-full object-cover -scale-x-100"
+              className="absolute inset-0 w-full h-full object-cover"
             />
             <SkeletonRenderer
               result={poseResult}
@@ -544,7 +577,9 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
 
             {/* Diagnostic overlay */}
             <div className="absolute top-2 left-2 z-10 px-2 py-1 rounded bg-black/60 text-[10px] font-mono text-lime-300 pointer-events-none">
-              LM:{debug.lm} VS:{debug.vs} FPS:{debug.fps}
+              {debug.app} | {debug.model}
+              <br />
+              LM:{debug.lm} VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
             </div>
 
             {/* Feedback overlay on video (mobile) */}
