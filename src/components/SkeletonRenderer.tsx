@@ -35,7 +35,7 @@ interface TrailPoint {
   y: number
 }
 
-const TRAIL_LENGTH = 140
+const TRAIL_LENGTH = 36
 const TRAIL_COLORS = {
   left: '#4ade80',
   right: '#fb7185',
@@ -76,7 +76,7 @@ const SkeletonRenderer: React.FC<Props> = ({ result, phase, width, height }) => 
     }
 
     // Always drawn (even when the skeleton is gone) so the recent trajectory
-    // stays visible; fades from oldest (transparent) to newest (opaque).
+    // stays visible; the tail fades out quickly so the screen doesn't fill up.
     const drawTrail = (pts: TrailPoint[], color: string) => {
       if (pts.length < 2) return
       ctx.save()
@@ -84,7 +84,8 @@ const SkeletonRenderer: React.FC<Props> = ({ result, phase, width, height }) => 
       ctx.lineJoin = 'round'
       ctx.lineWidth = 3
       for (let i = 1; i < pts.length; i++) {
-        ctx.globalAlpha = 0.04 + (i / pts.length) * 0.85
+        const a = Math.pow(i / pts.length, 1.6)
+        ctx.globalAlpha = 0.05 + a * 0.9
         ctx.strokeStyle = color
         ctx.beginPath()
         ctx.moveTo(pts[i - 1].x * width, pts[i - 1].y * height)
@@ -102,7 +103,7 @@ const SkeletonRenderer: React.FC<Props> = ({ result, phase, width, height }) => 
     const color = PHASE_COLORS[phase] || '#64748b'
 
     ctx.strokeStyle = color
-    ctx.lineWidth = 3
+    ctx.lineWidth = 4
     ctx.shadowColor = color
     ctx.shadowBlur = 6
 
@@ -126,18 +127,23 @@ const SkeletonRenderer: React.FC<Props> = ({ result, phase, width, height }) => 
       const y = kp.y * height
       const isWrist =
         idx === POSE_LANDMARKS.LEFT_WRIST || idx === POSE_LANDMARKS.RIGHT_WRIST
-      const radius = isWrist ? 7 : 5
+      const radius = isWrist ? 12 : 8
 
+      // Dark halo behind each point so it stands out on any background.
+      ctx.beginPath()
+      ctx.arc(x, y, radius + 2, 0, Math.PI * 2)
+      ctx.fillStyle = 'rgba(2, 6, 23, 0.75)'
+      ctx.fill()
       ctx.beginPath()
       ctx.arc(x, y, radius, 0, Math.PI * 2)
-      ctx.fillStyle = isWrist ? color : '#f8fafc'
+      ctx.fillStyle = isWrist ? color : '#ffffff'
       ctx.fill()
 
       if (isWrist) {
         ctx.beginPath()
-        ctx.arc(x, y, radius + 3, 0, Math.PI * 2)
+        ctx.arc(x, y, radius + 6, 0, Math.PI * 2)
         ctx.strokeStyle = color
-        ctx.lineWidth = 2
+        ctx.lineWidth = 3
         ctx.stroke()
       }
     }
