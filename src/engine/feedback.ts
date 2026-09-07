@@ -243,6 +243,15 @@ export function evaluateFeedback(
 let speechSynth: SpeechSynthesis | null = null
 let italianVoice: SpeechSynthesisVoice | null = null
 let keepAliveTimer: ReturnType<typeof setInterval> | null = null
+let userUnlocked = false
+
+function isIOS(): boolean {
+  if (typeof navigator === 'undefined') return false
+  return (
+    /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+    (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
+  )
+}
 
 function pickItalianVoice(synth: SpeechSynthesis): void {
   const voices = synth.getVoices()
@@ -274,14 +283,19 @@ export function initSpeech(): void {
     pickItalianVoice(speechSynth)
   }, 300)
 
-  // Known Chrome/Android bug: the synth goes silent after ~15s with no speech
-  // unless it is periodically nudged. Keep it alive for the whole session.
+  // Keep the synthesis alive for the whole session. Chrome/Android has a known
+  // bug where the synth goes silent after ~15s unless nudged; iOS silently
+  // suspends the audio session and needs its own gentle resume + re-prime.
   if (!keepAliveTimer) {
     keepAliveTimer = setInterval(() => {
       if (!speechSynth) return
       try {
         speechSynth.resume()
-        if (speechSynth.speaking || speechSynth.pending) {
+        if (isIOS()) {
+          if (userUnlocked && !speechSynth.speaking) {
+            primeSpeech()
+          }
+        } else if (speechSynth.speaking || speechSynth.pending) {
           speechSynth.pause()
           speechSynth.resume()
         }
@@ -293,16 +307,19 @@ export function initSpeech(): void {
 }
 
 // iOS/Safari only allows speechSynthesis.speak() when it's triggered from a
-// user gesture. Call this from a tap/click handler once (e.g. the "Start"
-// button) to unlock the audio API silently.
+// user gesture. Call this from a tap/click handler (e.g. the "Start" button or
+// a dedicated audio-unlock button) to unlock the audio API silently.
 export function primeSpeech(): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
   try {
     const synth = window.speechSynthesis
     synth.cancel()
+    synth.getVoices()
     const silent = new SpeechSynthesisUtterance(' ')
     silent.volume = 0
+    silent.rate = 5
     synth.speak(silent)
+    userUnlocked = true
   } catch {
     /* noop */
   }

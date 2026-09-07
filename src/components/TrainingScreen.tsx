@@ -124,6 +124,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   // Aspect ratio (w/h) of the live camera frame, used to size the video
   // container so the normalized skeleton landmarks align with the pixels.
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
+  const [audioUnlocked, setAudioUnlocked] = useState(false)
 
   // ---- Diagnostic state (helps identify "no skeleton" root cause) ----
   const [debug, setDebug] = useState<{
@@ -137,7 +138,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     knee: number
     hand: number
   }>({
-    lm: -1,
+    lm: 0,
     vs: '?',
     fps: 0,
     app: 'init',
@@ -520,7 +521,11 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           infRef.current.count++
           setDebug((d) => (detMs !== d.detMs ? { ...d, detMs } : d))
           if (result && result.landmarks && result.landmarks.length > 0) {
-            setDebug((d) => ({ ...d, lm: result.landmarks.length }))
+            // LM = number of visible keypoints out of 33 (real diagnostic value)
+            const visibleCount = result.landmarks[0].filter(
+              (k) => (k.visibility ?? 1) >= 0.3
+            ).length
+            setDebug((d) => (d.lm === visibleCount ? d : { ...d, lm: visibleCount }))
             setPoseResult(result)
 
             // ---- Professional analysis diagnostics (symmetry / knees / handle) ----
@@ -802,7 +807,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
             <div className="absolute top-2 left-2 z-10 px-2 py-1 rounded bg-black/60 text-[10px] font-mono text-lime-300 pointer-events-none">
               {debug.app} | {debug.model}
               <br />
-              LM:{debug.lm} VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
+              LM:{debug.lm}/33 VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
               <br />
               SYM:{debug.sym} KNEE:{debug.knee} MAN:{debug.hand}
               <br />
@@ -812,6 +817,22 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               <span className="text-sky-300">griglia=simmetria</span>{' '}
               <span className="text-amber-400">ginocchia=flare</span>
             </div>
+
+            {/* Audio unlock (iOS/Safari needs a real tap; Model load takes time
+                so the Start-gesture context is long gone by then). */}
+            {!audioUnlocked && (
+              <button
+                onClick={() => {
+                  initSpeech()
+                  primeSpeech()
+                  speak('La voce è attiva')
+                  setAudioUnlocked(true)
+                }}
+                className="pointer-events-auto absolute top-1/2 left-1/2 -translate-x-1/2 -translate-y-1/2 z-20 px-5 py-3 rounded-2xl bg-amber-400/90 text-slate-900 text-sm font-bold shadow-lg animate-pulse"
+              >
+                Tocca qui per attivare la voce 🔊
+              </button>
+            )}
 
             {/* Feedback overlay on video (mobile) */}
             <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none lg:hidden">

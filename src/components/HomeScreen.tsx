@@ -8,6 +8,7 @@ import {
   RefreshCw,
 } from 'lucide-react'
 import { APP_VERSION, BUILD_DATE, hardReset } from '../version'
+import { initSpeech, primeSpeech } from '../engine/feedback'
 
 interface Props {
   onStart: (mode: 'training') => void
@@ -125,7 +126,11 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
         </div>
 
         <button
-          onClick={() => onStart('training')}
+          onClick={() => {
+            initSpeech()
+            primeSpeech()
+            onStart('training')
+          }}
           className="btn-primary w-full !py-4 text-lg flex items-center justify-center gap-2"
         >
           <PlayCircle size={22} />
