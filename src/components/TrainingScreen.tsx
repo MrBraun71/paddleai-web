@@ -156,22 +156,25 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   const voiceRef = useRef(voiceEnabled)
   voiceRef.current = voiceEnabled
 
-  // Low-frequency push from the loop -> state
+  // Low-frequency push from the loop -> state. The duration always ticks
+  // (~4x/sec), while the heavier SQI stats only update when they change.
   const pushUiRef = useRef<(force?: boolean) => void>(() => {})
   pushUiRef.current = (force) => {
     const e = engineRef.current
     const s = e.lastSqi
+    const duration = performance.now() - e.startTime
     setUi((prev) => {
       if (
         !force &&
         prev.strokeCount === e.strokes.length &&
         prev.posture === (s?.posture ?? 0) &&
-        prev.technique === (s?.technique ?? 0)
+        prev.technique === (s?.technique ?? 0) &&
+        Math.abs(prev.duration - duration) < 400
       ) {
         return prev
       }
       return {
-        duration: performance.now() - e.startTime,
+        duration,
         strokeCount: e.strokes.length,
         posture: s?.posture ?? 0,
         technique: s?.technique ?? 0,
@@ -382,7 +385,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
       }
 
       // Keep the UI clock ticking without depending on new strokes
-      if (performance.now() - engineRef.current.startTime > 0) {
+      if (engineRef.current.startTime > 0) {
         pushUiRef.current()
       }
 
@@ -542,11 +545,12 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   // ---- Start camera when model is ready ----
   const handleStop = () => {
     const e = engineRef.current
+    const durationMs = performance.now() - e.startTime
     const session: SessionData = {
       id: Math.random().toString(36).substring(2, 9),
-      startTime: e.startTime,
+      startTime: Date.now() - durationMs,
       endTime: Date.now(),
-      durationMs: Date.now() - e.startTime,
+      durationMs,
       strokes: e.strokes,
       sqi: e.lastSqi,
       avgStrokeRate: e.rate,
