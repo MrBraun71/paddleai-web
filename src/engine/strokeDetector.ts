@@ -28,10 +28,15 @@ interface StrokeDetectorState {
   currentPhase: StrokePhase
   currentSide: 'left' | 'right'
   strokeCount: number
-  cycleStart: number
+cycleStart: number
   lastCycleDuration: number
   dominantSideBuffer: number[]
   pendingErrors: string[]
+  exitSince: number
+  exitWristY0: number
+  exitMaxDrop: number
+  entryAt: number
+  exitAt: number
 }
 
 const historyDurationMs = 2000
@@ -51,6 +56,14 @@ const TRUNK_FOLDED = 0.4 // shoulders ahead of hips -> catch/recovery
 
 const TREND_LAG = 4
 
+// Finale/svincolo: at the end of the drive the hands must press down (extract
+// the blade). Below this normalized-y drop over the exit window = missed.
+const EXTRACTION_DROP_MIN = 0.015
+
+// Ripresa must be slow and controlled: when it is shorter than this fraction
+// of the drive the slide is being rushed.
+const RECOVERY_MIN_RATIO = 0.8
+
 const state: StrokeDetectorState = {
   reachHistory: [],
   emaReach: { left: 0, right: 0 },
@@ -65,6 +78,11 @@ const state: StrokeDetectorState = {
   lastCycleDuration: 1000,
   dominantSideBuffer: [],
   pendingErrors: [],
+  exitSince: 0,
+  exitWristY0: 0,
+  exitMaxDrop: 0,
+  entryAt: 0,
+  exitAt: 0,
 }
 
 export function resetStrokeDetector(): void {
@@ -81,6 +99,11 @@ export function resetStrokeDetector(): void {
   state.lastCycleDuration = 1000
   state.dominantSideBuffer = []
   state.pendingErrors = []
+  state.exitSince = 0
+  state.exitWristY0 = 0
+  state.exitMaxDrop = 0
+  state.entryAt = 0
+  state.exitAt = 0
 }
 
 // ---- Signals ---------------------------------------------------------------
@@ -348,6 +371,28 @@ export function processFrame(
     return stale
   }
 
+  // ---- Finale/svincolo: the hands must press DOWN while leaving the drive
+  // (extract the blade). Track the wrist drop over the whole exit window. ----
+  const wristKp =
+    lm[side === 'left' ? POSE_LANDMARKS.LEFT_WRIST : POSE_LANDMARKS.RIGHT_WRIST]
+  const wristY = wristKp && Number.isFinite(wristKp.y) ? wristKp.y : Number.NaN
+  if (newPhase === 'exit') {
+    if (state.currentPhase !== 'exit') {
+      state.exitSince = timestampMs
+      state.exitWristY0 = Number.isFinite(wristY) ? wristY : 0
+      state.exitMaxDrop = 0
+    } else if (Number.isFinite(wristY) && state.exitSince > 0) {
+      const drop = wristY - state.exitWristY0
+      if (drop > state.exitMaxDrop) state.exitMaxDrop = drop
+    }
+  } else if (state.currentPhase === 'exit' && state.exitSince > 0) {
+    if (state.exitMaxDrop < EXTRACTION_DROP_MIN) {
+      if (!state.pendingErrors.includes('no-extraction')) {
+        state.pendingErrors.push('no-extraction')
+      }
+    }
+  }
+
   let newStrokeDetected = false
   let lastStroke: StrokeCycle | undefined
 
@@ -359,6 +404,16 @@ export function processFrame(
       cycleDuration >= minStrokeDurationMs &&
       cycleDuration <= maxStrokeDurationMs
     ) {
+      // Ripresa must be slow and controlled: if the slide returns faster than
+      // the drive (which just ended: entry -> exit), the recovery is rushed.
+      const driveDur = state.exitAt - state.entryAt
+      const recoveryDur = timestampMs - state.exitAt
+      if (driveDur > 300 && recoveryDur > 0 && recoveryDur < driveDur * RECOVERY_MIN_RATIO) {
+        if (!state.pendingErrors.includes('rushed-recovery')) {
+          state.pendingErrors.push('rushed-recovery')
+        }
+      }
+
       state.strokeCount++
       state.lastCycleDuration = cycleDuration
       state.dominantSideBuffer.push(side === 'left' ? 0 : 1)
@@ -382,6 +437,15 @@ export function processFrame(
       newStrokeDetected = true
     }
     state.cycleStart = timestampMs
+  }
+
+  // Phase-transition bookkeeping for drive/recovery pacing and the extraction.
+  if (newPhase === 'entry' && state.currentPhase !== 'entry') {
+    state.entryAt = timestampMs
+    state.exitSince = 0
+  }
+  if (newPhase === 'exit' && state.currentPhase !== 'exit') {
+    state.exitAt = timestampMs
   }
 
   state.currentPhase = newPhase
