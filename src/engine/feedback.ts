@@ -192,27 +192,82 @@ export function evaluateFeedback(
 
 let speechSynth: SpeechSynthesis | null = null
 let italianVoice: SpeechSynthesisVoice | null = null
+let keepAliveTimer: ReturnType<typeof setInterval> | null = null
+
+function pickItalianVoice(synth: SpeechSynthesis): void {
+  const voices = synth.getVoices()
+  italianVoice =
+    voices.find((v) => v.lang.toLowerCase().startsWith('it')) ??
+    voices[0] ??
+    null
+}
 
 export function initSpeech(): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
   speechSynth = window.speechSynthesis
-  const loadVoices = () => {
-    const voices = speechSynth!.getVoices()
-    italianVoice =
-      voices.find((v) => v.lang.startsWith('it')) ?? voices[0] ?? null
+  pickItalianVoice(speechSynth)
+
+  // Voices are loaded asynchronously on some browsers.
+  speechSynth.onvoiceschanged = () => {
+    if (speechSynth) pickItalianVoice(speechSynth)
   }
-  loadVoices()
-  speechSynth.onvoiceschanged = loadVoices
+  let tries = 0
+  const retry = setInterval(() => {
+    if (!speechSynth || speechSynth.getVoices().length > 0) {
+      clearInterval(retry)
+      return
+    }
+    if (++tries > 6) {
+      clearInterval(retry)
+      return
+    }
+    pickItalianVoice(speechSynth)
+  }, 300)
+
+  // Known Chrome/Android bug: the synth goes silent after ~15s with no speech
+  // unless it is periodically nudged. Keep it alive for the whole session.
+  if (!keepAliveTimer) {
+    keepAliveTimer = setInterval(() => {
+      if (!speechSynth) return
+      try {
+        speechSynth.resume()
+        if (speechSynth.speaking || speechSynth.pending) {
+          speechSynth.pause()
+          speechSynth.resume()
+        }
+      } catch {
+        /* noop */
+      }
+    }, 10000)
+  }
+}
+
+// iOS/Safari only allows speechSynthesis.speak() when it's triggered from a
+// user gesture. Call this from a tap/click handler once (e.g. the "Start"
+// button) to unlock the audio API silently.
+export function primeSpeech(): void {
+  if (typeof window === 'undefined' || !window.speechSynthesis) return
+  try {
+    const synth = window.speechSynthesis
+    synth.cancel()
+    const silent = new SpeechSynthesisUtterance(' ')
+    silent.volume = 0
+    synth.speak(silent)
+  } catch {
+    /* noop */
+  }
 }
 
 export function speak(text: string): void {
   if (!speechSynth) return
+  if (!italianVoice) pickItalianVoice(speechSynth)
   speechSynth.cancel()
   const utter = new SpeechSynthesisUtterance(text)
   utter.lang = 'it-IT'
   if (italianVoice) utter.voice = italianVoice
   utter.rate = 1.0
   utter.pitch = 1.0
-  utter.volume = 0.9
+  utter.volume = 0.95
+  utter.onerror = (e) => console.warn('VogaAI: speech error', e)
   speechSynth.speak(utter)
 }

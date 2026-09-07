@@ -2,6 +2,7 @@ import React, { useState } from 'react'
 import HomeScreen from './components/HomeScreen'
 import TrainingScreen from './components/TrainingScreen'
 import RecapScreen from './components/RecapScreen'
+import { initSpeech, primeSpeech } from './engine/feedback'
 import type { SessionData } from './types'
 
 type ScreenState = 'home' | 'training' | 'recap'
@@ -12,6 +13,10 @@ const App: React.FC = () => {
   const [lastSession, setLastSession] = useState<SessionData | null>(null)
 
   const handleStart = () => {
+    // The "Start" tap is a user gesture: unlock the speech API right here
+    // (iOS ignores speechSynthesis.speak() otherwise) before navigation.
+    initSpeech()
+    primeSpeech()
     setScreen('training')
   }
 

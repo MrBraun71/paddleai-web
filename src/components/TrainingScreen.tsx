@@ -26,6 +26,7 @@ import {
   evaluateFeedback,
   resetFeedback,
   initSpeech,
+  primeSpeech,
   speak,
 } from '../engine/feedback'
 import type {
@@ -376,8 +377,17 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     loadModel()
     initSpeech()
 
+    // Fallback unlock: some browsers lose the Start-gesture context after the
+    // camera grant dialog; the next tap anywhere re-unlocks the speech API.
+    const unlock = () => {
+      initSpeech()
+      primeSpeech()
+    }
+    window.addEventListener('pointerdown', unlock, { once: true })
+
     return () => {
       cancelled = true
+      window.removeEventListener('pointerdown', unlock)
       streamRef.current?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
     }
