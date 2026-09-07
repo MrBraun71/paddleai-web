@@ -5,7 +5,9 @@ import {
   Activity,
   ListChecks,
   ChevronRight,
+  RefreshCw,
 } from 'lucide-react'
+import { APP_VERSION, BUILD_DATE, hardReset } from '../version'
 
 interface Props {
   onStart: (mode: 'training') => void
@@ -13,6 +15,13 @@ interface Props {
 
 const HomeScreen: React.FC<Props> = ({ onStart }) => {
   const [selectedGoal, setSelectedGoal] = useState<'tecnica' | 'resistenza' | 'velocita'>('tecnica')
+  const [resetting, setResetting] = useState(false)
+
+  const handleReset = async () => {
+    if (resetting) return
+    setResetting(true)
+    await hardReset()
+  }
 
   const goals = [
     {
@@ -46,6 +55,24 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
             <span className="text-lg font-bold text-white">PaddleAI</span>
           </div>
           <span className="text-xs text-slate-400">AI Coach</span>
+        </div>
+
+        <div className="flex items-center justify-center gap-2">
+          <span className="px-2 py-1 rounded-full bg-sky-500/10 border border-sky-500/30 text-[11px] font-mono font-semibold text-sky-300">
+            v{APP_VERSION}
+          </span>
+          <span className="px-2 py-1 rounded-full bg-slate-800/60 border border-slate-700 text-[11px] font-mono text-slate-400">
+            build {BUILD_DATE}
+          </span>
+          <button
+            onClick={handleReset}
+            disabled={resetting}
+            title="Svuota cache e ricarica l'app"
+            className="flex items-center gap-1 px-2 py-1 rounded-full bg-slate-800/60 border border-slate-700 text-[11px] font-mono text-slate-300 hover:bg-slate-700 hover:text-white transition-colors"
+          >
+            <RefreshCw size={11} className={resetting ? 'animate-spin' : ''} />
+            Hard Reset
+          </button>
         </div>
 
         <div className="text-center pt-4">
