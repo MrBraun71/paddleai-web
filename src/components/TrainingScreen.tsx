@@ -251,8 +251,55 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     }
   }
 
+  // ---- Init once: load model, then start camera, then record ----
+  // A single mount-only effect so that transitioning appState to 'recording'
+  // never re-runs a cleanup that would stop the just-started webcam stream.
   useEffect(() => {
     let cancelled = false
+
+    async function startCamera() {
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: {
+            facingMode: 'user',
+            width: { ideal: 320 },
+            height: { ideal: 240 },
+          },
+          audio: false,
+        })
+        if (cancelled) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        streamRef.current = stream
+        const video = videoRef.current
+        if (!video) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
+        video.srcObject = stream
+        // Wait for metadata/ready before starting the loop
+        await new Promise<void>((resolve) => {
+          if (video.readyState >= 2) return resolve()
+          video.onloadeddata = () => resolve()
+        })
+        if (cancelled) return
+        await video.play().catch(() => {})
+
+        engineRef.current.startTime = performance.now()
+        resetStrokeDetector()
+        resetBiomechanics()
+        resetFeedback()
+        setAppState('recording')
+      } catch (err) {
+        console.error('Camera error', err)
+        if (!cancelled) {
+          setCameraError(
+            'Impossibile accedere alla fotocamera. Controlla i permessi.'
+          )
+        }
+      }
+    }
 
     async function loadModel() {
       try {
@@ -288,6 +335,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
                 model: `${POSE_MODELS[i].name}/${delegate}`,
               }))
               setAppState('ready')
+              await startCamera()
               return
             } catch (e) {
               lastErr = e
@@ -311,6 +359,8 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
 
     return () => {
       cancelled = true
+      streamRef.current?.getTracks().forEach((t) => t.stop())
+      streamRef.current = null
     }
   }, [])
 
@@ -483,62 +533,6 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   }, [])
 
   // ---- Start camera when model is ready ----
-  useEffect(() => {
-    if (appState !== 'ready') return
-    let active = true
-
-    async function startCamera() {
-      try {
-        const stream = await navigator.mediaDevices.getUserMedia({
-          video: {
-            facingMode: 'user',
-            width: { ideal: 320 },
-            height: { ideal: 240 },
-          },
-          audio: false,
-        })
-        if (!active) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        streamRef.current = stream
-        const video = videoRef.current
-        if (!video) {
-          stream.getTracks().forEach((t) => t.stop())
-          return
-        }
-        video.srcObject = stream
-        // Wait for metadata/ready before starting the loop
-        await new Promise<void>((resolve) => {
-          if (video.readyState >= 2) return resolve()
-          video.onloadeddata = () => resolve()
-        })
-        await video.play().catch(() => {})
-
-        engineRef.current.startTime = performance.now()
-        resetStrokeDetector()
-        resetBiomechanics()
-        resetFeedback()
-        setAppState('recording')
-      } catch (err) {
-        console.error('Camera error', err)
-        if (active) {
-          setCameraError(
-            'Impossibile accedere alla fotocamera. Controlla i permessi del browser.'
-          )
-        }
-      }
-    }
-
-    startCamera()
-
-    return () => {
-      active = false
-      streamRef.current?.getTracks().forEach((t) => t.stop())
-      streamRef.current = null
-    }
-  }, [appState])
-
   const handleStop = () => {
     const e = engineRef.current
     const session: SessionData = {
