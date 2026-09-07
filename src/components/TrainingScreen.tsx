@@ -685,7 +685,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               playsInline
               muted
               autoPlay
-              className="absolute inset-0 w-full h-full object-cover"
+              className="absolute inset-0 w-full h-full object-cover -scale-x-100"
             />
             <SkeletonRenderer
               result={poseResult}
