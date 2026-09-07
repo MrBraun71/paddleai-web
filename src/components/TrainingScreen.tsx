@@ -625,6 +625,11 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
                   strokeDetection.lastStroke?.sequenceErrors ?? []
                 e.strokes.push(metrics)
 
+                // Guaranteed audible confirmation that the coach is live.
+                if (e.strokes.length === 1) {
+                  if (voiceRef.current) speak('Prima vogata rilevata')
+                }
+
                 const recent = e.strokes.slice(-20)
                 const newSqi = calculateSQI(metrics, recent)
                 e.lastSqi = newSqi
@@ -690,13 +695,41 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   const handleStop = () => {
     const e = engineRef.current
     const durationMs = performance.now() - e.startTime
+    // Recap SQI = average over the whole session (not just the last stroke).
+    let sqi: SQIBreakdown | null = e.lastSqi
+    if (e.strokes.length > 0) {
+      const avg = (k: keyof StrokeMetrics): number =>
+        e.strokes.reduce((s, m) => {
+          const v = m[k]
+          return s + (typeof v === 'number' ? v : 0)
+        }, 0) / e.strokes.length
+      const base = e.strokes[e.strokes.length - 1]
+      sqi = calculateSQI(
+        {
+          ...base,
+          trunkLeanDeg: avg('trunkLeanDeg'),
+          trunkRotationDeg: avg('trunkRotationDeg'),
+          shoulderAsymmetryDeg: avg('shoulderAsymmetryDeg'),
+          headStability: avg('headStability'),
+          strokeAmplitude: avg('strokeAmplitude'),
+          catchAngleDeg: avg('catchAngleDeg'),
+          exitAngleDeg: avg('exitAngleDeg'),
+          armExtensionRatio: avg('armExtensionRatio'),
+          jerkIndex: avg('jerkIndex'),
+          lateralOscillation: avg('lateralOscillation'),
+          kneeFlareIndex: avg('kneeFlareIndex'),
+          handleWaviness: avg('handleWaviness'),
+        },
+        e.strokes.slice(-20)
+      )
+    }
     const session: SessionData = {
       id: Math.random().toString(36).substring(2, 9),
       startTime: Date.now() - durationMs,
       endTime: Date.now(),
       durationMs,
       strokes: e.strokes,
-      sqi: e.lastSqi,
+      sqi,
       avgStrokeRate: e.rate,
       strokeCount: e.strokes.length,
       feedbackMessages: e.feedback,

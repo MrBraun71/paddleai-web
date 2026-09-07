@@ -316,6 +316,7 @@ const TTS_CLIP_HASHES: Record<string, string> = {
   'Ripresa troppo rapida: fai scorrere il carrello in modo lento e controllato': 'ceab0a0c',
   "Inclina di più la pala all'attacco": '5489ccbe',
   'La voce è attiva': '674eacd8',
+  'Prima vogata rilevata': '4cd0e4d8',
 }
 
 function clipUrl(text: string): string | null {
@@ -334,36 +335,26 @@ function liveTtsUrl(text: string): string {
 function speakFallback(text: string): void {
   speakCount++
   lastAudioOk = false
-  const playUrl = (url: string, onFail: () => void): void => {
-    try {
-      if (fallbackAudio) {
-        fallbackAudio.pause()
-        fallbackAudio.src = ''
-      }
-      const audio = new Audio(url)
-      fallbackAudio = audio
-      audio.volume = 1
-      const ok = () => {
-        lastAudioOk = true
-      }
-      audio.oncanplay = ok
-      audio.ondurationchange = ok
-      audio.onerror = () => {
-        console.warn('VogaAI: TTS audio fallback failed', url)
-        onFail()
-      }
-      void audio.play().then(ok).catch(onFail)
-    } catch {
-      onFail()
+  const url = clipUrl(text) ?? liveTtsUrl(text)
+  try {
+    if (!fallbackAudio) {
+      fallbackAudio = new Audio()
     }
-  }
-  // Primary: local prerecorded clip. Fallback: live Google Translate TTS
-  // (used only for messages that have no local clip, e.g. the live rate one).
-  const local = clipUrl(text)
-  if (local) {
-    playUrl(local, () => {})
-  } else {
-    playUrl(liveTtsUrl(text), () => {})
+    fallbackAudio.muted = false
+    fallbackAudio.volume = 1
+    fallbackAudio.onerror = () => {
+      console.warn('VogaAI: TTS audio fallback failed', url)
+      lastAudioOk = false
+    }
+    fallbackAudio.onplaying = () => {
+      lastAudioOk = true
+    }
+    fallbackAudio.src = url
+    void fallbackAudio.play().catch(() => {
+      lastAudioOk = false
+    })
+  } catch {
+    lastAudioOk = false
   }
 }
 
@@ -436,19 +427,28 @@ export function initSpeech(): void {
 export function primeSpeech(): void {
   if (typeof window === 'undefined') return
   if (!hasNativeSpeech() || isIOS()) {
-    // Unlock HTMLAudio with a real in-gesture play of a shipped clip. Volume 0
-    // still counts as an accepted play() on iOS and unlocks the media session
-    // without producing any sound.
+    // Unlock the WebKit media session silently: resume an AudioContext (the
+    // gesture-counted, guaranteed-silent unlock) and play a muted clip. Never
+    // produces sound, safe to call more than once.
     try {
-      const a = new Audio(`${import.meta.env.BASE_URL}tts/674eacd8.mp3`)
-      a.volume = 0
-      void a.play().catch(() => {
-        /* noop */
-      })
-      userUnlocked = true
+      const AC = window.AudioContext ?? (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext
+      if (AC) {
+        const ctx = new AC()
+        void ctx.resume()
+      }
     } catch {
       /* noop */
     }
+    try {
+      const a = new Audio(`${import.meta.env.BASE_URL}tts/674eacd8.mp3`)
+      a.muted = true
+      void a.play().catch(() => {
+        /* noop */
+      })
+    } catch {
+      /* noop */
+    }
+    userUnlocked = true
     return
   }
   try {

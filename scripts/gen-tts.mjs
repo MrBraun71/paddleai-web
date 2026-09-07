@@ -23,6 +23,7 @@ const TEXTS = [
   'Ripresa troppo rapida: fai scorrere il carrello in modo lento e controllato',
   "Inclina di più la pala all'attacco",
   'La voce è attiva',
+  'Prima vogata rilevata',
 ]
 
 function fnv1a(str) {
