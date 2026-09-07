@@ -345,16 +345,64 @@ export function primeSpeech(): void {
   }
 }
 
+let speakCount = 0
+
+// Diagnostics for the on-screen debug overlay.
+export function getSpeechStatus(): {
+  count: number
+  unlocked: boolean
+  speaking: boolean
+  paused: boolean
+} {
+  const synthed = typeof window !== 'undefined' && window.speechSynthesis
+  return {
+    count: speakCount,
+    unlocked: userUnlocked,
+    speaking: !!synthed && (window.speechSynthesis.speaking ?? false),
+    paused: !!synthed && (window.speechSynthesis.paused ?? false),
+  }
+}
+
 export function speak(text: string): void {
   if (!speechSynth) return
   if (!italianVoice) pickItalianVoice(speechSynth)
-  speechSynth.cancel()
-  const utter = new SpeechSynthesisUtterance(text)
-  utter.lang = 'it-IT'
-  if (italianVoice) utter.voice = italianVoice
-  utter.rate = 1.0
-  utter.pitch = 1.0
-  utter.volume = 0.95
-  utter.onerror = (e) => console.warn('VogaAI: speech error', e)
-  speechSynth.speak(utter)
+  speakCount++
+  const iosDevice = isIOS()
+  try {
+    // On iOS cancel() right before speak() is known to swallow the utterance:
+    // only cancel when there is actually a queue to replace (and not on the
+    // first speak after unlock). Android/Chrome keeps the cancel.
+    if (!iosDevice || speechSynth.speaking || speechSynth.pending) {
+      speechSynth.cancel()
+    }
+    const utter = new SpeechSynthesisUtterance(text)
+    utter.lang = 'it-IT'
+    if (italianVoice) utter.voice = italianVoice
+    utter.rate = 1.0
+    utter.pitch = 1.0
+    utter.volume = 0.95
+    utter.onstart = () => {
+      // iOS sometimes goes suspended right when an utterance starts.
+      try {
+        speechSynth?.resume()
+      } catch {
+        /* noop */
+      }
+    }
+    utter.onerror = (e) => console.warn('VogaAI: speech error', e)
+    speechSynth.speak(utter)
+    speechSynth.resume()
+    // Second kick a few ms later: iOS stalls unless resume() is re-called.
+    if (iosDevice) {
+      window.setTimeout(() => {
+        try {
+          speechSynth?.resume()
+        } catch {
+          /* noop */
+        }
+      }, 400)
+    }
+  } catch {
+    /* noop */
+  }
 }

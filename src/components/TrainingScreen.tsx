@@ -28,6 +28,7 @@ import {
   initSpeech,
   primeSpeech,
   speak,
+  getSpeechStatus,
 } from '../engine/feedback'
 import { POSE_LANDMARKS } from '../types'
 import type {
@@ -137,6 +138,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     sym: number
     knee: number
     hand: number
+    spk: number
   }>({
     lm: 0,
     vs: '?',
@@ -147,6 +149,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     sym: 0,
     knee: 0,
     hand: 0,
+    spk: 0,
   })
 
   // Live buffers for the professional analysis diagnostics (symmetry grid,
@@ -410,16 +413,19 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     initSpeech()
 
     // Fallback unlock: some browsers lose the Start-gesture context after the
-    // camera grant dialog; the next tap anywhere re-unlocks the speech API.
+    // camera grant dialog; the next tap (pointerdown on mouse, touchstart on
+    // iOS) anywhere re-unlocks the speech API.
     const unlock = () => {
       initSpeech()
       primeSpeech()
     }
     window.addEventListener('pointerdown', unlock, { once: true })
+    window.addEventListener('touchstart', unlock, { once: true })
 
     return () => {
       cancelled = true
       window.removeEventListener('pointerdown', unlock)
+      window.removeEventListener('touchstart', unlock)
       streamRef.current?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
     }
@@ -472,6 +478,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           sym: Math.round(sym * 10) / 10,
           knee: Math.round(d.kneeEma * 10) / 10,
           hand: Math.round(d.handEma * 10) / 10,
+          spk: getSpeechStatus().count,
         }))
 
         // Auto-downgrade: if the model is too slow for this device, switch to a
@@ -809,7 +816,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               <br />
               LM:{debug.lm}/33 VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
               <br />
-              SYM:{debug.sym} KNEE:{debug.knee} MAN:{debug.hand}
+              SYM:{debug.sym} KNEE:{debug.knee} MAN:{debug.hand} SPK:{debug.spk}
               <br />
               <span className="text-green-400">polso sx=verde</span>{' '}
               <span className="text-rose-400">polso dx=rosa</span>
