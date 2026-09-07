@@ -12,6 +12,7 @@ import SQIGauge from './SQIGauge'
 import {
   processFrame as processStrokeFrame,
   resetStrokeDetector,
+  setKneeControl,
 } from '../engine/strokeDetector'
 import {
   processFrame as processBioFrame,
@@ -126,6 +127,9 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   // container so the normalized skeleton landmarks align with the pixels.
   const [videoAspect, setVideoAspect] = useState<number | null>(null)
   const [audioUnlocked, setAudioUnlocked] = useState(false)
+  const [kneeMode, setKneeMode] = useState<'beginner' | 'professional'>(
+    'professional'
+  )
 
   // ---- Diagnostic state (helps identify "no skeleton" root cause) ----
   const [debug, setDebug] = useState<{
@@ -736,6 +740,21 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         </div>
         <div className="text-sm font-mono text-slate-300">{mmss(ui.duration)}</div>
         <div className="flex gap-2">
+          <button
+            onClick={() => {
+              const next = kneeMode === 'professional' ? 'beginner' : 'professional'
+              setKneeMode(next)
+              setKneeControl(next)
+            }}
+            title="Controllo ginocchia: Incrocio come principiante / Proxy come professionale"
+            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+              kneeMode === 'professional'
+                ? 'bg-sky-600 hover:bg-sky-500 text-white'
+                : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
+            }`}
+          >
+            {kneeMode === 'professional' ? '🦵 Ginocchia PRO' : '🦵 Ginocchia OFF'}
+          </button>
           <button
             onClick={handlePause}
             className="px-3 py-1.5 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold text-slate-200 transition-colors"

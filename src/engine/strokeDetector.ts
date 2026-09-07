@@ -64,6 +64,22 @@ const EXTRACTION_DROP_MIN = 0.015
 // of the drive the slide is being rushed.
 const RECOVERY_MIN_RATIO = 0.8
 
+// Knee control mode:
+//  - 'professional': the catch REQUIRES compressed knees and knee errors are
+//    flagged (knee flare, knees-early).
+//  - 'beginner':     the knees do NOT gate the catch (arms+trunk are enough)
+//    and knee errors are ignored, so rowers who cannot compress deeply can
+//    still be counted and coached.
+let kneeControl: 'beginner' | 'professional' = 'professional'
+
+export function setKneeControl(mode: 'beginner' | 'professional'): void {
+  kneeControl = mode
+}
+
+export function getKneeControl(): 'beginner' | 'professional' {
+  return kneeControl
+}
+
 const state: StrokeDetectorState = {
   reachHistory: [],
   emaReach: { left: 0, right: 0 },
@@ -257,15 +273,20 @@ function classifyPhase(p: PostureState): StrokePhase {
   const hasTrunk = !Number.isNaN(p.pTrunk)
   if (!hasLegs && !hasTrunk) return 'none'
 
+  // In 'beginner' mode the legs never gate the catch; in 'professional' mode
+  // the legs must be compressed (knees near the chest) exactly like the
+  // technique requires.
+  const requireLegs = kneeControl === 'professional'
   const catchPose =
-    (hasLegs ? p.pLeg >= LEG_COMPRESSED : true) &&
-    (hasTrunk ? p.pTrunk >= TRUNK_FOLDED : true)
+    (hasTrunk ? p.pTrunk >= TRUNK_FOLDED : true) &&
+    (requireLegs && hasLegs ? p.pLeg >= LEG_COMPRESSED : true)
 
   if (p.pArm >= ARM_EXTENDED && catchPose) return 'entry'
   if (p.pArm <= ARM_BENT) return 'exit'
 
   // Arms fully extended but not yet a catch: which direction are the legs
   // going? Extending = pushing (drive), compressing = heading back to catch.
+  // Without usable legs (or in entry logic fallback) stick to the last phase.
   if (p.pArm >= ARM_EXTENDED) {
     if (hasLegs) {
       const legDelta = p.pLeg - p.legPrev
@@ -292,6 +313,7 @@ function flagArmsFirst(p: PostureState): void {
 }
 
 function flagKneesEarly(p: PostureState): void {
+  if (kneeControl !== 'professional') return
   // "Piegare le ginocchia troppo presto": legs start compressing during the
   // recovery while the hands have not yet passed the knees (arms still bent).
   const legsRising = p.pLeg - p.legPrev >= 0.12

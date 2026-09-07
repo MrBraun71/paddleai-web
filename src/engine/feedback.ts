@@ -1,4 +1,5 @@
 import type { StrokeMetrics, SQIBreakdown, FeedbackMessage } from '../types'
+import { getKneeControl } from './strokeDetector'
 
 interface FeedbackRule {
   id: string
@@ -104,7 +105,7 @@ const rules: FeedbackRule[] = [
   },
   {
     id: 'KNEES_EARLY',
-    check: (m) => m.sequenceErrors.includes('knees-early'),
+    check: (m) => getKneeControl() === 'professional' && m.sequenceErrors.includes('knees-early'),
     messageIt: 'Nella ripresa pieghi le gambe troppo presto: prima le mani oltre le ginocchia',
     messageEn: 'In the recovery you bend the knees too early: hands past the knees first',
     type: 'high',
@@ -114,7 +115,7 @@ const rules: FeedbackRule[] = [
   },
   {
     id: 'KNEES_OUT',
-    check: (m) => m.kneeFlareIndex > 28,
+    check: (m) => getKneeControl() === 'professional' && m.kneeFlareIndex > 28,
     messageIt: 'Ginocchia troppo aperte in compressione: tieni le rotule allineate e scendi tra le gambe',
     messageEn: 'Knees are flaring outward at the catch: keep the patellas aligned',
     type: 'high',
