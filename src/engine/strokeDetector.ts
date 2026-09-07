@@ -8,9 +8,16 @@ interface ReachSample {
   side: 'left' | 'right'
 }
 
+interface FoldSample {
+  v: number
+  timestamp: number
+}
+
 interface StrokeDetectorState {
   reachHistory: ReachSample[]
   emaReach: Record<'left' | 'right', number>
+  emaFold: number
+  foldHistory: FoldSample[]
   currentPhase: StrokePhase
   currentSide: 'left' | 'right'
   strokeCount: number
@@ -24,11 +31,14 @@ const minStrokeDurationMs = 400
 const maxStrokeDurationMs = 3000
 const MIN_SAMPLES = 8
 const MIN_REACH_RANGE = 0.02
+const MIN_FOLD_RANGE = 0.04
 const SIDE_HYSTERESIS = 0.04
 
 const state: StrokeDetectorState = {
   reachHistory: [],
   emaReach: { left: 0, right: 0 },
+  emaFold: 0,
+  foldHistory: [],
   currentPhase: 'none',
   currentSide: 'left',
   strokeCount: 0,
@@ -40,6 +50,8 @@ const state: StrokeDetectorState = {
 export function resetStrokeDetector(): void {
   state.reachHistory = []
   state.emaReach = { left: 0, right: 0 }
+  state.emaFold = 0
+  state.foldHistory = []
   state.currentPhase = 'none'
   state.currentSide = 'left'
   state.strokeCount = 0
@@ -58,7 +70,11 @@ export function resetStrokeDetector(): void {
  * reaches forward (catch/attacco) the wrist moves TOWARD the camera, which
  * projects to almost no x/y change on screen but a clear change in depth.
  */
-function depthReach(lm: NormalizedLandmark[], side: 'left' | 'right'): number {
+function depthReach(
+  lm: NormalizedLandmark[],
+  side: 'left' | 'right',
+  torsoWidth: number
+): number {
   const shoulder =
     side === 'left'
       ? lm[POSE_LANDMARKS.LEFT_SHOULDER]
@@ -69,10 +85,34 @@ function depthReach(lm: NormalizedLandmark[], side: 'left' | 'right'): number {
       : lm[POSE_LANDMARKS.RIGHT_WRIST]
   if (!shoulder || !wrist) return Number.NaN
   if (!isFinite(wrist.z) || !isFinite(shoulder.z)) return Number.NaN
-  const torsoWidth = Math.abs(
-    lm[POSE_LANDMARKS.LEFT_SHOULDER].x - lm[POSE_LANDMARKS.RIGHT_SHOULDER].x
-  ) || 0.001
   return (shoulder.z - wrist.z) / torsoWidth
+}
+
+/**
+ * How far the trunk is folded FORWARD (shoulders ahead of the hips, the classic
+ * catch posture). Positive = shoulders closer to the camera than the hips.
+ * Needed to tell a real stroke from a plain arm extension.
+ */
+function trunkFoldValue(
+  lm: NormalizedLandmark[],
+  torsoWidth: number
+): number {
+  const lShoulder = lm[POSE_LANDMARKS.LEFT_SHOULDER]
+  const rShoulder = lm[POSE_LANDMARKS.RIGHT_SHOULDER]
+  const lHip = lm[POSE_LANDMARKS.LEFT_HIP]
+  const rHip = lm[POSE_LANDMARKS.RIGHT_HIP]
+  if (!lShoulder || !rShoulder || !lHip || !rHip) return Number.NaN
+  if (
+    !isFinite(lShoulder.z) ||
+    !isFinite(rShoulder.z) ||
+    !isFinite(lHip.z) ||
+    !isFinite(rHip.z)
+  ) {
+    return Number.NaN
+  }
+  const shoulderZ = (lShoulder.z + rShoulder.z) / 2
+  const hipZ = (lHip.z + rHip.z) / 2
+  return (hipZ - shoulderZ) / torsoWidth
 }
 
 function detectDominantSide(result: PoseLandmarkerResult): 'left' | 'right' {
@@ -113,6 +153,19 @@ function detectPhaseReach(side: 'left' | 'right'): StrokePhase {
   return current >= prev ? 'recovery' : 'pull'
 }
 
+function isTrunkFolded(): boolean {
+  const samples = state.foldHistory.slice(-60)
+  if (samples.length < MIN_SAMPLES) return false
+  const values = samples.map((s) => s.v)
+  const lo = Math.min(...values)
+  const hi = Math.max(...values)
+  const range = hi - lo
+  // Without a real forward fold there is no rowing catch, whatever the arms do.
+  if (range < MIN_FOLD_RANGE) return false
+  const p = Math.min(1, Math.max(0, (values[values.length - 1] - lo) / range))
+  return p >= 0.55
+}
+
 export interface StrokeDetectorOutput {
   currentPhase: StrokePhase
   currentSide: 'left' | 'right'
@@ -138,10 +191,15 @@ export function processFrame(
 
   const lm = result.landmarks[0]
   const side = detectDominantSide(result)
-  const reach = depthReach(lm, side)
+  const torsoWidth = Math.abs(
+    lm[POSE_LANDMARKS.LEFT_SHOULDER].x -
+      lm[POSE_LANDMARKS.RIGHT_SHOULDER].x
+  ) || 0.001
+  const reach = depthReach(lm, side, torsoWidth)
+  const fold = trunkFoldValue(lm, torsoWidth)
 
   // Depth unavailable: hold the machine so a few bad frames don't reset it.
-  if (!isFinite(reach)) return stale
+  if (!isFinite(reach) || !isFinite(fold)) return stale
 
   // EMA smoothing: the depth channel is noisier than x/y.
   const base = state.emaReach[side] || reach
@@ -149,8 +207,12 @@ export function processFrame(
   state.emaReach[side] = ema
   state.reachHistory.push({ reach: ema, timestamp: timestampMs, side })
 
+  state.emaFold = state.emaFold === 0 ? fold : state.emaFold * 0.65 + fold * 0.35
+  state.foldHistory.push({ v: state.emaFold, timestamp: timestampMs })
+
   const cutoff = timestampMs - historyDurationMs
   state.reachHistory = state.reachHistory.filter((w) => w.timestamp > cutoff)
+  state.foldHistory = state.foldHistory.filter((w) => w.timestamp > cutoff)
 
   const newPhase = detectPhaseReach(side)
 
@@ -165,10 +227,12 @@ export function processFrame(
   let lastStroke: StrokeCycle | undefined
 
   // One vogata is counted when the hands finish their extension (recovery) and
-  // reach full extension (catch) again — that is the start of the next drive.
+  // reach full extension (catch) again — that is the start of the next drive —
+  // AND the trunk is really folded forward (a rowing catch, not arms only).
   if (
     state.currentPhase === 'recovery' &&
-    (newPhase === 'entry' || newPhase === 'pull')
+    (newPhase === 'entry' || newPhase === 'pull') &&
+    isTrunkFolded()
   ) {
     const cycleDuration = timestampMs - state.cycleStart
     if (
