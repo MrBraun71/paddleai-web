@@ -28,6 +28,7 @@ import {
   resetFeedback,
   initSpeech,
   primeSpeech,
+  stopSpeaking,
   speak,
   getSpeechStatus,
 } from '../engine/feedback'
@@ -432,6 +433,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
       cancelled = true
       window.removeEventListener('pointerdown', unlock)
       window.removeEventListener('touchstart', unlock)
+      stopSpeaking()
       streamRef.current?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
     }

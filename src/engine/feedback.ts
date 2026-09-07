@@ -406,8 +406,10 @@ export function initSpeech(): void {
   // Keep the synthesis alive for the whole session. Chrome/Android has a known
   // bug where the synth goes silent after ~15s unless nudged; iOS silently
   // suspends the audio session and needs its own gentle resume + re-prime.
+  // The HTMLAudio fallback never suspends, so we skip it entirely there.
   if (!keepAliveTimer) {
     keepAliveTimer = setInterval(() => {
+      if (mustUseFallback()) return
       if (!speechSynth) return
       try {
         speechSynth.resume()
@@ -434,11 +436,12 @@ export function initSpeech(): void {
 export function primeSpeech(): void {
   if (typeof window === 'undefined') return
   if (!hasNativeSpeech() || isIOS()) {
-    // Unlock HTMLAudio with a real in-gesture play of a shipped clip (nearly
-    // inaudible so it only warms the media session).
+    // Unlock HTMLAudio with a real in-gesture play of a shipped clip. Volume 0
+    // still counts as an accepted play() on iOS and unlocks the media session
+    // without producing any sound.
     try {
       const a = new Audio(`${import.meta.env.BASE_URL}tts/674eacd8.mp3`)
-      a.volume = 0.01
+      a.volume = 0
       void a.play().catch(() => {
         /* noop */
       })
@@ -463,6 +466,28 @@ export function primeSpeech(): void {
 }
 
 let speakCount = 0
+
+// Silence anything that is currently playing (native synth or fallback clip).
+// Called when leaving the training screen so voice never keeps talking after
+// the session is closed.
+export function stopSpeaking(): void {
+  try {
+    if (fallbackAudio) {
+      fallbackAudio.pause()
+      fallbackAudio.src = ''
+      fallbackAudio = null
+    }
+  } catch {
+    /* noop */
+  }
+  if (typeof window !== 'undefined' && window.speechSynthesis) {
+    try {
+      window.speechSynthesis.cancel()
+    } catch {
+      /* noop */
+    }
+  }
+}
 
 // Diagnostics for the on-screen debug overlay.
 export function getSpeechStatus(): {
