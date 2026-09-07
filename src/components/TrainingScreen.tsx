@@ -44,6 +44,28 @@ interface Props {
 
 type AppState = 'initializing' | 'loading-model' | 'ready' | 'recording' | 'stopped'
 
+// Model candidates, heaviest first. Order matters: we start with the highest
+// accuracy the device can handle and auto-downgrade (see loop) if inference
+// time is too high.
+const POSE_MODELS = [
+  {
+    name: 'heavy',
+    path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
+  },
+  {
+    name: 'full',
+    path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+  },
+  {
+    name: 'lite',
+    path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+  },
+]
+
+// If the average inference time over a 3s window exceeds this (ms), the model
+// is too slow for this device: downgrade to the next lighter one.
+const INF_THRESHOLD_MS = 100
+
 // Engine state kept entirely in refs so it never triggers re-renders or
 // recreates the frame loop.
 interface EngineState {
@@ -107,6 +129,11 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   const lastVideoTimeRef = useRef(-1)
   const lastInferTimeRef = useRef(0)
 
+  // Model adaptivity
+  const visionRef = useRef<Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>> | null>(null)
+  const modelIndexRef = useRef(0)
+  const infRef = useRef({ sum: 0, count: 0 })
+
   // Diagnostics
   const statsRef = useRef({ frames: 0, lastLm: -1, lastT: 0, fps: 0 })
 
@@ -167,24 +194,65 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     phase,
   }
 
-  // ---- Load AI model once (with fallback to lighter models / CPU) ----
+  // ---- Load AI model (with fallback to lighter models / CPU) ----
+  async function createLandmarker(
+    vision: Awaited<ReturnType<typeof FilesetResolver.forVisionTasks>>,
+    index: number,
+    delegate: 'GPU' | 'CPU'
+  ) {
+    const cand = POSE_MODELS[index]
+    return PoseLandmarker.createFromOptions(vision, {
+      baseOptions: {
+        modelAssetPath: cand.path,
+        delegate,
+      },
+      runningMode: 'VIDEO',
+      numPoses: 1,
+      minPoseDetectionConfidence: 0.5,
+      minPosePresenceConfidence: 0.5,
+      minTrackingConfidence: 0.5,
+    })
+  }
+
+  // Swap to a lighter model while the session is running. Kept in a ref so the
+  // rAF loop (mounted once) can call the latest version.
+  const downgradeRef = useRef<() => void>(() => {})
+  downgradeRef.current = async () => {
+    const vision = visionRef.current
+    if (!vision) return
+    if (modelIndexRef.current >= POSE_MODELS.length - 1) return
+    const target = modelIndexRef.current + 1
+    // Detach the current (too slow) model immediately so the loop stops using
+    // it, letting the video play smoothly while we load the lighter one.
+    landmarkerRef.current = null
+    for (const delegate of ['GPU', 'CPU'] as const) {
+      try {
+        console.log(`PaddleAI: downgrading to ${POSE_MODELS[target].name}/${delegate}`)
+        const lm = await createLandmarker(vision, target, delegate)
+        landmarkerRef.current = lm
+        modelIndexRef.current = target
+        infRef.current = { sum: 0, count: 0 }
+        setDebug((d) => ({
+          ...d,
+          lm: -1,
+          model: `${POSE_MODELS[target].name}/${delegate}`,
+        }))
+        return
+      } catch (e) {
+        console.warn(`PaddleAI: downgrade to ${POSE_MODELS[target].name}/${delegate} failed`, e)
+      }
+    }
+    // Could not build a lighter model: restore the old one.
+    try {
+      const lm = await createLandmarker(vision, modelIndexRef.current, 'GPU')
+      landmarkerRef.current = lm
+    } catch {
+      landmarkerRef.current = null
+    }
+  }
+
   useEffect(() => {
     let cancelled = false
-
-    const CANDIDATES = [
-      {
-        name: 'heavy',
-        path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
-      },
-      {
-        name: 'full',
-        path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
-      },
-      {
-        name: 'lite',
-        path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
-      },
-    ]
 
     async function loadModel() {
       try {
@@ -193,36 +261,37 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         )
         if (cancelled) return
+        visionRef.current = vision
+
+        // Mobile devices rarely handle the heavy model's warm-up without
+        // freezing the webcam feed, so start from 'full' there; desktops can
+        // try the most accurate 'heavy' first. The auto-downgrade in the loop
+        // will move to a lighter model if inference is still too slow.
+        const isMobile =
+          /Android|iPhone|iPad|iPod/i.test(navigator.userAgent) ||
+          (window.matchMedia?.('(pointer: coarse)').matches ?? false)
+        modelIndexRef.current = isMobile ? 1 : 0
 
         let lastErr: unknown = null
-        for (const cand of CANDIDATES) {
+        for (let i = modelIndexRef.current; i < POSE_MODELS.length; i++) {
           // Try GPU first, then fall back to CPU for the same model
           for (const delegate of ['GPU', 'CPU'] as const) {
             try {
-              console.log(`PaddleAI: trying ${cand.name} on ${delegate}`)
-              const lm = await PoseLandmarker.createFromOptions(vision, {
-                baseOptions: {
-                  modelAssetPath: cand.path,
-                  delegate,
-                },
-                runningMode: 'VIDEO',
-                numPoses: 1,
-                minPoseDetectionConfidence: 0.5,
-                minPosePresenceConfidence: 0.5,
-                minTrackingConfidence: 0.5,
-              })
+              console.log(`PaddleAI: trying ${POSE_MODELS[i].name} on ${delegate}`)
+              const lm = await createLandmarker(vision, i, delegate)
               if (cancelled) return
               landmarkerRef.current = lm
+              modelIndexRef.current = i
               setDebug((d) => ({
                 ...d,
                 lm: -1,
-                model: `${cand.name}/${delegate}`,
+                model: `${POSE_MODELS[i].name}/${delegate}`,
               }))
               setAppState('ready')
               return
             } catch (e) {
               lastErr = e
-              console.warn(`PaddleAI: ${cand.name}/${delegate} failed`, e)
+              console.warn(`PaddleAI: ${POSE_MODELS[i].name}/${delegate} failed`, e)
             }
           }
         }
@@ -275,6 +344,27 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           fps: s.fps,
           app: appStateRef.current,
         }))
+
+        // Auto-downgrade: if the model is too slow for this device, switch to a
+        // lighter one after a 4s warm-up so the webcam feed never freezes.
+        const inf = infRef.current
+        if (
+          appStateRef.current === 'recording' &&
+          inf.count > 5 &&
+          inf.sum / inf.count > INF_THRESHOLD_MS &&
+          modelIndexRef.current < POSE_MODELS.length - 1 &&
+          performance.now() - engineRef.current.startTime > 4000
+        ) {
+          console.log(
+            `PaddleAI: avg inference ${Math.round(inf.sum / inf.count)}ms > ${INF_THRESHOLD_MS}ms, downgrading`
+          )
+          inf.sum = 0
+          inf.count = 0
+          void downgradeRef.current()
+        } else if (inf.count > 0) {
+          inf.sum = 0
+          inf.count = 0
+        }
       }
 
       // Do not run inference for the first ~1s of the feed: the very first
@@ -298,6 +388,8 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           const t0 = performance.now()
           const result = lm.detectForVideo(video, time)
           const detMs = Math.round(performance.now() - t0)
+          infRef.current.sum += detMs
+          infRef.current.count++
           setDebug((d) => (detMs !== d.detMs ? { ...d, detMs } : d))
           if (result && result.landmarks && result.landmarks.length > 0) {
             setDebug((d) => ({ ...d, lm: result.landmarks.length }))
