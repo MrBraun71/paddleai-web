@@ -1,4 +1,4 @@
-import React, { useCallback, useEffect, useRef, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import { Activity } from 'lucide-react'
 import {
   PoseLandmarker,
@@ -44,6 +44,38 @@ interface Props {
 
 type AppState = 'initializing' | 'loading-model' | 'ready' | 'recording' | 'stopped'
 
+// Engine state kept entirely in refs so it never triggers re-renders or
+// recreates the frame loop.
+interface EngineState {
+  startTime: number
+  strokes: StrokeMetrics[]
+  feedback: FeedbackMessage[]
+  currentStrokePartial: Partial<StrokeMetrics>[]
+  currentStrokeStart: number
+  currentStrokeSide: 'left' | 'right'
+  fatigueSegments: { index: number; fatigue: number; timestamp: number }[]
+  lastSqi: SQIBreakdown | null
+  rate: number
+  amplitude: number
+  fatigue: number
+}
+
+function createEngineState(): EngineState {
+  return {
+    startTime: 0,
+    strokes: [],
+    feedback: [],
+    currentStrokePartial: [],
+    currentStrokeStart: 0,
+    currentStrokeSide: 'left',
+    fatigueSegments: [],
+    lastSqi: null,
+    rate: 0,
+    amplitude: 0,
+    fatigue: 0,
+  }
+}
+
 const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) => {
   const videoRef = useRef<HTMLVideoElement>(null)
   const streamRef = useRef<MediaStream | null>(null)
@@ -55,64 +87,69 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
 
   const [poseResult, setPoseResult] = useState<PoseLandmarkerResult | null>(null)
   const [phase, setPhase] = useState<StrokePhase>('none')
-
-  const [sqi, setSqi] = useState<SQIBreakdown | null>(null)
   const [feedbackMsg, setFeedbackMsg] = useState<FeedbackMessage | null>(null)
 
   const rafRef = useRef<number | null>(null)
   const lastVideoTimeRef = useRef(-1)
 
-  const sessionRef = useRef<{
-    startTime: number
-    strokes: StrokeMetrics[]
-    feedback: FeedbackMessage[]
-    currentStrokePartial: Partial<StrokeMetrics>[]
-    currentStrokeStart: number
-    currentStrokeSide: 'left' | 'right'
-    fatigueSegments: { index: number; fatigue: number; timestamp: number }[]
-    lastFeedbackTime: number
-  }>({
-    startTime: 0,
-    strokes: [],
-    feedback: [],
-    currentStrokePartial: [],
-    currentStrokeStart: 0,
-    currentStrokeSide: 'left',
-    fatigueSegments: [],
-    lastFeedbackTime: 0,
-  })
-
-  const statsRef = useRef({
+  // UI state that updates at low frequency (throttled)
+  const [ui, setUi] = useState({
     duration: 0,
-    rate: 0,
-    amplitude: 0,
-    fatigue: 0,
+    strokeCount: 0,
+    posture: 0,
+    technique: 0,
+    symmetry: 0,
+    fluidity: 0,
+    costanza: 0,
   })
 
-  const [stats, setStats] = useState({
-    duration: 0,
-    rate: 0,
-    amplitude: 0,
-    fatigue: 0,
-  })
+  // Refs mirror of UI to avoid stale closures in the frame loop
+  const engineRef = useRef<EngineState>(createEngineState())
+  const voiceRef = useRef(voiceEnabled)
+  voiceRef.current = voiceEnabled
 
-  // Format live stats for display
+  // Low-frequency push from the loop -> state
+  const pushUiRef = useRef<(force?: boolean) => void>(() => {})
+  pushUiRef.current = (force) => {
+    const e = engineRef.current
+    const s = e.lastSqi
+    setUi((prev) => {
+      if (
+        !force &&
+        prev.strokeCount === e.strokes.length &&
+        prev.posture === (s?.posture ?? 0) &&
+        prev.technique === (s?.technique ?? 0)
+      ) {
+        return prev
+      }
+      return {
+        duration: performance.now() - e.startTime,
+        strokeCount: e.strokes.length,
+        posture: s?.posture ?? 0,
+        technique: s?.technique ?? 0,
+        symmetry: s?.symmetry ?? 0,
+        fluidity: s?.fluidity ?? 0,
+        costanza: s?.costanza ?? 0,
+      }
+    })
+  }
+
   const liveDisplay = {
-    sqi: sqi?.overall ?? 0,
-    strokeRate: stats.rate,
-    strokeCount: sessionRef.current.strokes.length,
-    posture: sqi?.posture ?? 0,
-    technique: sqi?.technique ?? 0,
-    symmetry: sqi?.symmetry ?? 0,
-    fluidity: sqi?.fluidity ?? 0,
-    costanza: sqi?.costanza ?? 0,
-    fatigue: stats.fatigue,
-    amplitude: stats.amplitude,
-    duration: stats.duration,
+    sqi: engineRef.current.lastSqi?.overall ?? 0,
+    strokeRate: engineRef.current.rate,
+    strokeCount: ui.strokeCount,
+    posture: ui.posture,
+    technique: ui.technique,
+    symmetry: ui.symmetry,
+    fluidity: ui.fluidity,
+    costanza: ui.costanza,
+    fatigue: engineRef.current.fatigue,
+    amplitude: engineRef.current.amplitude,
+    duration: ui.duration,
     phase,
   }
 
-  // Load model
+  // ---- Load AI model once ----
   useEffect(() => {
     let cancelled = false
 
@@ -140,7 +177,11 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         setAppState('ready')
       } catch (e) {
         console.error('Model load failed', e)
-        if (!cancelled) setModelError('Errore nel caricamento del modello AI. Verifica la connessione.')
+        if (!cancelled) {
+          setModelError(
+            'Errore nel caricamento del modello AI. Verifica la connessione.'
+          )
+        }
       }
     }
 
@@ -152,10 +193,121 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     }
   }, [])
 
-  // Start camera when model ready
+  // ---- Fast loop: pose + engine + throttled UI ----
+  useEffect(() => {
+    const loop = (time: number) => {
+      const video = videoRef.current
+      const lm = landmarkerRef.current
+      if (!video || !lm) {
+        rafRef.current = requestAnimationFrame(loop)
+        return
+      }
+
+      // Keep the UI clock ticking without depending on new strokes
+      if (performance.now() - engineRef.current.startTime > 0) {
+        pushUiRef.current()
+      }
+
+      // Only run inference when a new video frame is available
+      if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
+        lastVideoTimeRef.current = video.currentTime
+        try {
+          const result = lm.detectForVideo(video, time)
+          if (result && result.landmarks && result.landmarks.length > 0) {
+            setPoseResult((prev) => {
+              // Only update when landmark object actually changed (avoid re-render every frame)
+              if (prev === result) return prev
+              return result
+            })
+
+            const strokeDetection = processStrokeFrame(result, time)
+            setPhase(strokeDetection.currentPhase)
+
+            const partial = processBioFrame(
+              result,
+              time,
+              strokeDetection.currentPhase,
+              strokeDetection.currentSide,
+              strokeDetection.lastCycleDurationMs
+            )
+
+            const e = engineRef.current
+
+            if (strokeDetection.newStrokeDetected) {
+              const partialList = e.currentStrokePartial
+              if (partialList.length > 0) {
+                const metrics = computeFullStrokeMetrics(
+                  time - e.currentStrokeStart,
+                  e.currentStrokeSide,
+                  partialList,
+                  e.strokes.length + 1,
+                  e.currentStrokeStart,
+                  time
+                )
+                e.strokes.push(metrics)
+
+                const recent = e.strokes.slice(-20)
+                const newSqi = calculateSQI(metrics, recent)
+                e.lastSqi = newSqi
+
+                e.fatigue = calculateFatigueIndex(e.strokes, newSqi)
+                e.rate = 60000 / metrics.durationMs
+                e.amplitude = metrics.strokeAmplitude
+
+                const fb = evaluateFeedback(
+                  metrics,
+                  newSqi,
+                  time - e.startTime,
+                  e.strokes.length,
+                  e.rate
+                )
+                if (fb) {
+                  e.feedback.push(fb)
+                  setFeedbackMsg(fb)
+                  if (voiceRef.current && fb.type !== 'info') {
+                    speak(fb.text)
+                  }
+                }
+
+                if (e.strokes.length % 50 === 0) {
+                  e.fatigueSegments.push({
+                    index: Math.floor(e.strokes.length / 50),
+                    fatigue: e.fatigue,
+                    timestamp: time,
+                  })
+                }
+              }
+              e.currentStrokePartial = []
+              e.currentStrokeStart = time
+              e.currentStrokeSide = strokeDetection.currentSide
+            } else {
+              e.currentStrokePartial.push(partial)
+            }
+
+            // Throttle: update UI ~4x/sec to avoid render flood
+            if (time % 250 < 40) {
+              pushUiRef.current(true)
+            }
+          }
+        } catch (err) {
+          console.error('Pose/engine error', err)
+        }
+      }
+
+      rafRef.current = requestAnimationFrame(loop)
+    }
+
+    rafRef.current = requestAnimationFrame(loop)
+
+    return () => {
+      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+    }
+  }, [])
+
+  // ---- Start camera when model is ready ----
   useEffect(() => {
     if (appState !== 'ready') return
-    let cancelled = false
+    let active = true
 
     async function startCamera() {
       try {
@@ -167,167 +319,78 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           },
           audio: false,
         })
-        if (cancelled) {
+        if (!active) {
           stream.getTracks().forEach((t) => t.stop())
           return
         }
         streamRef.current = stream
         const video = videoRef.current
-        if (!video) return
+        if (!video) {
+          stream.getTracks().forEach((t) => t.stop())
+          return
+        }
         video.srcObject = stream
-        await video.play()
-        sessionRef.current.startTime = Date.now()
-        setAppState('recording')
+        // Wait for metadata/ready before starting the loop
+        await new Promise<void>((resolve) => {
+          if (video.readyState >= 2) return resolve()
+          video.onloadeddata = () => resolve()
+        })
+        await video.play().catch(() => {})
+
+        engineRef.current.startTime = performance.now()
         resetStrokeDetector()
         resetBiomechanics()
         resetFeedback()
-        requestAnimationFrame(frameLoop)
-      } catch (e) {
-        console.error('Camera error', e)
-        if (!cancelled) setCameraError('Impossibile accedere alla fotocamera. Controlla i permessi.')
+        setAppState('recording')
+      } catch (err) {
+        console.error('Camera error', err)
+        if (active) {
+          setCameraError(
+            'Impossibile accedere alla fotocamera. Controlla i permessi del browser.'
+          )
+        }
       }
     }
 
     startCamera()
 
     return () => {
-      cancelled = true
-      if (rafRef.current) cancelAnimationFrame(rafRef.current)
+      active = false
       streamRef.current?.getTracks().forEach((t) => t.stop())
       streamRef.current = null
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [appState])
 
-  const frameLoop = useCallback((time: number) => {
-    const video = videoRef.current
-    const lm = landmarkerRef.current
-    if (!video || !lm) return
-
-    if ((video.currentTime as number) !== lastVideoTimeRef.current) {
-      lastVideoTimeRef.current = video.currentTime
-      try {
-        const result = lm.detectForVideo(video, time)
-        if (result && result.landmarks && result.landmarks.length > 0) {
-          setPoseResult(result)
-
-          const strokeDetection = processStrokeFrame(result, time)
-          setPhase(strokeDetection.currentPhase)
-
-          const partial = processBioFrame(
-            result,
-            time,
-            strokeDetection.currentPhase,
-            strokeDetection.currentSide,
-            strokeDetection.lastCycleDurationMs
-          )
-
-          if (strokeDetection.newStrokeDetected) {
-            const s = sessionRef.current
-            const partialList = s.currentStrokePartial
-            if (partialList.length > 0) {
-              const metrics = computeFullStrokeMetrics(
-                time - s.currentStrokeStart,
-                s.currentStrokeSide,
-                partialList,
-                s.strokes.length + 1,
-                s.currentStrokeStart,
-                time
-              )
-              s.strokes.push(metrics)
-
-              const recent = s.strokes.slice(-20)
-              const newSqi = calculateSQI(metrics, recent)
-              setSqi(newSqi)
-
-              const fatigue = calculateFatigueIndex(s.strokes, newSqi)
-              statsRef.current.fatigue = fatigue
-
-              const rate = 60000 / metrics.durationMs
-              statsRef.current.rate = rate
-              statsRef.current.amplitude = metrics.strokeAmplitude
-
-              const fb = evaluateFeedback(
-                metrics,
-                newSqi,
-                time - s.startTime,
-                s.strokes.length,
-                rate
-              )
-              if (fb) {
-                s.feedback.push(fb)
-                setFeedbackMsg(fb)
-                if (voiceEnabled && fb.type !== 'info') {
-                  speak(fb.text)
-                }
-              }
-
-              if (
-                s.strokes.length % 50 === 0 &&
-                statsRef.current.fatigue !== undefined
-              ) {
-                s.fatigueSegments.push({
-                  index: Math.floor(s.strokes.length / 50),
-                  fatigue: statsRef.current.fatigue,
-                  timestamp: time,
-                })
-              }
-            }
-            s.currentStrokePartial = []
-            s.currentStrokeStart = time
-            s.currentStrokeSide = strokeDetection.currentSide
-          } else {
-            sessionRef.current.currentStrokePartial.push(partial)
-          }
-
-          const todayStats = statsRef.current
-          setStats({
-            duration: time - sessionRef.current.startTime,
-            rate: todayStats.rate,
-            amplitude: todayStats.amplitude,
-            fatigue: todayStats.fatigue,
-          })
-        }
-      } catch (e) {
-        console.error('Detection error', e)
-      }
-    }
-
-    rafRef.current = requestAnimationFrame(frameLoop)
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [voiceEnabled, sqi, phase])
-
-  const handleStop = useCallback(() => {
-    const s = sessionRef.current
-    const finalModel = sqi
+  const handleStop = () => {
+    const e = engineRef.current
     const session: SessionData = {
       id: Math.random().toString(36).substring(2, 9),
-      startTime: s.startTime,
+      startTime: e.startTime,
       endTime: Date.now(),
-      durationMs: Date.now() - s.startTime,
-      strokes: s.strokes,
-      sqi: finalModel,
-      avgStrokeRate: statsRef.current.rate,
-      strokeCount: s.strokes.length,
-      feedbackMessages: s.feedback,
+      durationMs: Date.now() - e.startTime,
+      strokes: e.strokes,
+      sqi: e.lastSqi,
+      avgStrokeRate: e.rate,
+      strokeCount: e.strokes.length,
+      feedbackMessages: e.feedback,
       fatigueIndex:
-        s.fatigueSegments.length > 0
-          ? s.fatigueSegments[s.fatigueSegments.length - 1].fatigue
-          : statsRef.current.fatigue,
-      fatigueSegments: s.fatigueSegments,
+        e.fatigueSegments.length > 0
+          ? e.fatigueSegments[e.fatigueSegments.length - 1].fatigue
+          : e.fatigue,
+      fatigueSegments: e.fatigueSegments,
     }
     streamRef.current?.getTracks().forEach((t) => t.stop())
     streamRef.current = null
     setAppState('stopped')
     onComplete(session)
-  }, [onComplete, sqi])
+  }
 
-  const handlePause = useCallback(() => {
-    if (rafRef.current) cancelAnimationFrame(rafRef.current)
+  const handlePause = () => {
     streamRef.current?.getTracks().forEach((t) => t.stop())
+    streamRef.current = null
     setAppState('stopped')
     onExit()
-  }, [onExit])
+  }
 
   const mmss = (ms: number) => {
     const s = Math.floor(ms / 1000)
@@ -335,18 +398,25 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     return `${m}:${(s % 60).toString().padStart(2, '0')}`
   }
 
+  const showLoading =
+    (appState === 'initializing' || appState === 'loading-model') &&
+    !cameraError &&
+    !modelError
+
   return (
     <div className="w-full h-full bg-slate-950 flex flex-col">
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-slate-900/90 backdrop-blur border-b border-slate-800">
         <div className="flex items-center gap-2">
-          <div className={`w-2.5 h-2.5 rounded-full ${
-            appState === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'
-          }`} />
+          <div
+            className={`w-2.5 h-2.5 rounded-full ${
+              appState === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'
+            }`}
+          />
           <Activity size={18} className="text-sky-400" />
           <span className="font-bold text-white">PaddleAI</span>
         </div>
-        <div className="text-sm font-mono text-slate-300">{mmss(stats.duration)}</div>
+        <div className="text-sm font-mono text-slate-300">{mmss(ui.duration)}</div>
         <div className="flex gap-2">
           <button
             onClick={handlePause}
@@ -354,45 +424,48 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           >
             Chiudi
           </button>
-          <button
-            onClick={handleStop}
-            className="btn-danger !px-3 !py-1.5 text-xs"
-          >
+          <button onClick={handleStop} className="btn-danger !px-3 !py-1.5 text-xs">
             Stop
           </button>
         </div>
       </div>
 
-      {/* Main content - responsive: row on desktop, column on mobile */}
+      {/* Main content */}
       <div className="flex-1 flex flex-col lg:flex-row gap-3 p-3 overflow-hidden">
         {/* Video area */}
-        <div className="flex-1 relative min-h-0 flex flex-col">
+        <div className="flex-1 relative min-h-[300px] lg:min-h-0 flex flex-col">
           {cameraError && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/90 rounded-xl">
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/95 rounded-xl">
               <div className="text-center p-6">
                 <p className="text-red-400 font-semibold mb-2">Errore Fotocamera</p>
                 <p className="text-sm text-slate-400">{cameraError}</p>
-                <button onClick={onExit} className="btn-primary mt-4 text-sm">Torna Indietro</button>
+                <button onClick={onExit} className="btn-primary mt-4 text-sm">
+                  Torna Indietro
+                </button>
               </div>
             </div>
           )}
 
           {modelError && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/90 rounded-xl">
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/95 rounded-xl">
               <div className="text-center p-6">
                 <p className="text-red-400 font-semibold mb-2">Errore Modello AI</p>
                 <p className="text-sm text-slate-400">{modelError}</p>
-                <button onClick={onExit} className="btn-primary mt-4 text-sm">Torna Indietro</button>
+                <button onClick={onExit} className="btn-primary mt-4 text-sm">
+                  Torna Indietro
+                </button>
               </div>
             </div>
           )}
 
-          {(appState === 'initializing' || appState === 'loading-model') && !cameraError && !modelError && (
-            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/90 rounded-xl">
+          {showLoading && (
+            <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/95 rounded-xl">
               <div className="text-center">
                 <div className="w-14 h-14 border-4 border-sky-400 border-t-transparent rounded-full animate-spin mx-auto mb-4" />
                 <p className="text-slate-300 font-medium">
-                  {appState === 'loading-model' ? 'Caricamento modello AI...' : 'Avvio fotocamera...'}
+                  {appState === 'loading-model'
+                    ? 'Caricamento modello AI...'
+                    : 'Avvio fotocamera...'}
                 </p>
                 <p className="text-xs text-slate-500 mt-2">
                   Prima volta: scarica ~20MB modello pose (on-device)
@@ -401,13 +474,13 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
             </div>
           )}
 
-          <div className="video-container flex-1 bg-black">
+          <div className="relative flex-1 bg-black rounded-xl overflow-hidden">
             <video
               ref={videoRef}
               playsInline
               muted
               autoPlay
-              className="absolute inset-0 w-full h-full object-cover"
+              className="absolute inset-0 w-full h-full object-cover -scale-x-100"
             />
             <SkeletonRenderer
               result={poseResult}
@@ -415,17 +488,19 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               width={640}
               height={480}
             />
-          </div>
 
-          {/* Feedback overlay - overlaid on video bottom (mobile) */}
-          <div className="lg:hidden absolute bottom-3 left-3 right-3 z-10 pointer-events-none">
-            <FeedbackOverlay current={feedbackMsg} />
+            {/* Feedback overlay on video (mobile) */}
+            <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none lg:hidden">
+              <FeedbackOverlay current={feedbackMsg} />
+            </div>
           </div>
         </div>
 
         {/* Right panel (desktop) */}
         <div className="hidden lg:flex w-80 flex-col gap-3 overflow-y-auto">
-          <SQIGauge value={sqi?.overall ?? 0} size={130} label="SQI LIVE" />
+          <div className="flex items-center justify-center">
+            <SQIGauge value={liveDisplay.sqi} size={130} label="SQI LIVE" />
+          </div>
           <LiveStatsPanel
             strokeRate={liveDisplay.strokeRate}
             strokeCount={liveDisplay.strokeCount}
@@ -439,9 +514,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
             duration={liveDisplay.duration}
             phase={liveDisplay.phase}
           />
-          <div className="hidden lg:block">
-            <FeedbackOverlay current={feedbackMsg} />
-          </div>
+          <FeedbackOverlay current={feedbackMsg} />
         </div>
       </div>
 
