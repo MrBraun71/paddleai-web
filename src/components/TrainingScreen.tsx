@@ -98,6 +98,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
 
   const rafRef = useRef<number | null>(null)
   const lastVideoTimeRef = useRef(-1)
+  const lastInferTimeRef = useRef(0)
 
   // Diagnostics
   const statsRef = useRef({ frames: 0, lastLm: -1, lastT: 0, fps: 0 })
@@ -159,9 +160,24 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     phase,
   }
 
-  // ---- Load AI model once ----
+  // ---- Load AI model once (with fallback to lighter models / CPU) ----
   useEffect(() => {
     let cancelled = false
+
+    const CANDIDATES = [
+      {
+        name: 'heavy',
+        path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
+      },
+      {
+        name: 'full',
+        path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_full/float16/1/pose_landmarker_full.task',
+      },
+      {
+        name: 'lite',
+        path: 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task',
+      },
+    ]
 
     async function loadModel() {
       try {
@@ -170,21 +186,36 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@latest/wasm'
         )
         if (cancelled) return
-        const lm = await PoseLandmarker.createFromOptions(vision, {
-          baseOptions: {
-            modelAssetPath:
-              'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_heavy/float16/1/pose_landmarker_heavy.task',
-            delegate: 'GPU',
-          },
-          runningMode: 'VIDEO',
-          numPoses: 1,
-          minPoseDetectionConfidence: 0.5,
-          minPosePresenceConfidence: 0.5,
-          minTrackingConfidence: 0.5,
-        })
-        if (cancelled) return
-        landmarkerRef.current = lm
-        setAppState('ready')
+
+        let lastErr: unknown = null
+        for (const cand of CANDIDATES) {
+          // Try GPU first, then fall back to CPU for the same model
+          for (const delegate of ['GPU', 'CPU'] as const) {
+            try {
+              console.log(`PaddleAI: trying ${cand.name} on ${delegate}`)
+              const lm = await PoseLandmarker.createFromOptions(vision, {
+                baseOptions: {
+                  modelAssetPath: cand.path,
+                  delegate,
+                },
+                runningMode: 'VIDEO',
+                numPoses: 1,
+                minPoseDetectionConfidence: 0.5,
+                minPosePresenceConfidence: 0.5,
+                minTrackingConfidence: 0.5,
+              })
+              if (cancelled) return
+              landmarkerRef.current = lm
+              setDebug((d) => ({ ...d, lm: -1, vs: d.vs, fps: d.fps }))
+              setAppState('ready')
+              return
+            } catch (e) {
+              lastErr = e
+              console.warn(`PaddleAI: ${cand.name}/${delegate} failed`, e)
+            }
+          }
+        }
+        throw lastErr
       } catch (e) {
         console.error('Model load failed', e)
         if (!cancelled) {
@@ -218,9 +249,15 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         pushUiRef.current()
       }
 
-      // Only run inference when a new video frame is available
-      if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
+      // Only run inference on a new video frame, throttled to ~15 fps so the
+      // heavy pose model doesn't freeze the webcam feed.
+      if (
+        video.readyState >= 2 &&
+        video.currentTime !== lastVideoTimeRef.current &&
+        time - lastInferTimeRef.current >= 66
+      ) {
         lastVideoTimeRef.current = video.currentTime
+        lastInferTimeRef.current = time
         const s = statsRef.current
         s.frames++
         if (time - s.lastT >= 1000) {
@@ -330,8 +367,8 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         const stream = await navigator.mediaDevices.getUserMedia({
           video: {
             facingMode: 'user',
-            width: { ideal: 640 },
-            height: { ideal: 480 },
+            width: { ideal: 480 },
+            height: { ideal: 360 },
           },
           audio: false,
         })
