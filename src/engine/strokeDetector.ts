@@ -13,17 +13,25 @@ interface FoldSample {
   timestamp: number
 }
 
+interface LegSample {
+  v: number
+  timestamp: number
+}
+
 interface StrokeDetectorState {
   reachHistory: ReachSample[]
   emaReach: Record<'left' | 'right', number>
   emaFold: number
   foldHistory: FoldSample[]
+  emaLeg: number
+  legHistory: LegSample[]
   currentPhase: StrokePhase
   currentSide: 'left' | 'right'
   strokeCount: number
   cycleStart: number
   lastCycleDuration: number
   dominantSideBuffer: number[]
+  pendingErrors: string[]
 }
 
 const historyDurationMs = 2000
@@ -32,19 +40,31 @@ const maxStrokeDurationMs = 3000
 const MIN_SAMPLES = 8
 const MIN_REACH_RANGE = 0.02
 const MIN_FOLD_RANGE = 0.04
+const MIN_LEG_RANGE = 0.02
 const SIDE_HYSTERESIS = 0.04
+
+// Posture thresholds (normalized 0..1 against each channel's own recent range).
+const ARM_EXTENDED = 0.75 // arms fully extended -> could be catch or drive
+const ARM_BENT = 0.3 // arms pulled to the body -> finish
+const LEG_COMPRESSED = 0.55 // knees bent, shins near vertical -> catch
+const TRUNK_FOLDED = 0.4 // shoulders ahead of hips -> catch/recovery
+
+const TREND_LAG = 4
 
 const state: StrokeDetectorState = {
   reachHistory: [],
   emaReach: { left: 0, right: 0 },
   emaFold: 0,
   foldHistory: [],
+  emaLeg: 0,
+  legHistory: [],
   currentPhase: 'none',
   currentSide: 'left',
   strokeCount: 0,
   cycleStart: 0,
   lastCycleDuration: 1000,
   dominantSideBuffer: [],
+  pendingErrors: [],
 }
 
 export function resetStrokeDetector(): void {
@@ -52,23 +72,22 @@ export function resetStrokeDetector(): void {
   state.emaReach = { left: 0, right: 0 }
   state.emaFold = 0
   state.foldHistory = []
+  state.emaLeg = 0
+  state.legHistory = []
   state.currentPhase = 'none'
   state.currentSide = 'left'
   state.strokeCount = 0
   state.cycleStart = 0
   state.lastCycleDuration = 1000
   state.dominantSideBuffer = []
+  state.pendingErrors = []
 }
 
+// ---- Signals ---------------------------------------------------------------
+
 /**
- * How far the hand is IN FRONT of the body for a given side, taken from the
- * landmark depth (z), scaled by the shoulder width so people and camera
- * distance don't matter. Positive = wrist closer to the camera than its
- * shoulder = arm extended forward.
- *
- * This is the only cue that stays stable in a frontal view: when the rower
- * reaches forward (catch/attacco) the wrist moves TOWARD the camera, which
- * projects to almost no x/y change on screen but a clear change in depth.
+ * How far the hand is IN FRONT of the body (landmark depth z), scaled by the
+ * shoulder width. High = arm extended toward the camera (catch/recovery-opener).
  */
 function depthReach(
   lm: NormalizedLandmark[],
@@ -89,14 +108,10 @@ function depthReach(
 }
 
 /**
- * How far the trunk is folded FORWARD (shoulders ahead of the hips, the classic
- * catch posture). Positive = shoulders closer to the camera than the hips.
- * Needed to tell a real stroke from a plain arm extension.
+ * Trunk fold: shoulders ahead of the hips (the catch posture). Positive =
+ * shoulders closer to the camera than the hips.
  */
-function trunkFoldValue(
-  lm: NormalizedLandmark[],
-  torsoWidth: number
-): number {
+function trunkFoldValue(lm: NormalizedLandmark[], torsoWidth: number): number {
   const lShoulder = lm[POSE_LANDMARKS.LEFT_SHOULDER]
   const rShoulder = lm[POSE_LANDMARKS.RIGHT_SHOULDER]
   const lHip = lm[POSE_LANDMARKS.LEFT_HIP]
@@ -115,56 +130,135 @@ function trunkFoldValue(
   return (hipZ - shoulderZ) / torsoWidth
 }
 
+/**
+ * Leg flexion via knee height relative to the hips (image y, camera-independent).
+ * 0 when the knees are raised next to the hips (compressed catch), growing as
+ * the legs straighten at the finish. Then normalized so "compressed = 1".
+ */
+function legFlexValue(lm: NormalizedLandmark[]): number {
+  const hipY =
+    (lm[POSE_LANDMARKS.LEFT_HIP].y + lm[POSE_LANDMARKS.RIGHT_HIP].y) / 2
+  const lKnee = lm[POSE_LANDMARKS.LEFT_KNEE]
+  const rKnee = lm[POSE_LANDMARKS.RIGHT_KNEE]
+  if (!isFinite(hipY)) return Number.NaN
+  if (lKnee && isFinite(lKnee.y)) return lKnee.y - hipY
+  if (rKnee && isFinite(rKnee.y)) return rKnee.y - hipY
+  return Number.NaN
+}
+
+function lagValue(values: number[], back: number, current: number): number {
+  if (values.length <= back) return current
+  return values[values.length - 1 - back]
+}
+
+function normalizeRange(values: number[], current: number, minRange: number): number {
+  const lo = Math.min(...values)
+  const hi = Math.max(...values)
+  const range = hi - lo
+  if (range < minRange) return Number.NaN
+  return Math.min(1, Math.max(0, (current - lo) / range))
+}
+
+// ---- Side selection --------------------------------------------------------
+
 function detectDominantSide(result: PoseLandmarkerResult): 'left' | 'right' {
   const lm = result.landmarks[0]
   const lVis = lm[POSE_LANDMARKS.LEFT_WRIST]?.visibility ?? 0
   const rVis = lm[POSE_LANDMARKS.RIGHT_WRIST]?.visibility ?? 0
-  // Hysteresis: don't flip side on every frame where both wrists are visible
-  // (typical in sculling), only when one side is clearly more tracked.
+  // Hysteresis: don't flip side on every frame where both wrists are visible.
   if (lVis > rVis + SIDE_HYSTERESIS) return 'left'
   if (rVis > lVis + SIDE_HYSTERESIS) return 'right'
   return state.currentSide
 }
 
-function detectPhaseReach(side: 'left' | 'right'): StrokePhase {
-  const samples = state.reachHistory.filter((s) => s.side === side).slice(-60)
-  if (samples.length < MIN_SAMPLES) return 'none'
+// ---- Phase classification ---------------------------------------------------
 
-  const values = samples.map((s) => s.reach)
-  const current = values[values.length - 1]
-  if (!isFinite(current)) return 'none'
-
-  const lo = Math.min(...values)
-  const hi = Math.max(...values)
-  const range = hi - lo
-  // No real reach cycle happening (too little depth variation): hold state.
-  if (range < MIN_REACH_RANGE) return 'none'
-
-  const p = Math.min(1, Math.max(0, (current - lo) / range))
-
-  // Arms fully extended forward (just before the drive): catch / ATTACCO.
-  if (p >= 0.75) return 'entry'
-  // Arms pulled to the body: finish / FINALE.
-  if (p <= 0.25) return 'exit'
-
-  // Between the extremes the trend tells us if the hands are going out
-  // (RECUPERO) or coming back (TRAZIONE).
-  const prev = samples[samples.length - 2]?.reach ?? current
-  return current >= prev ? 'recovery' : 'pull'
+interface PostureState {
+  pArm: number
+  pTrunk: number
+  pLeg: number
+  armPrev: number
+  legPrev: number
 }
 
-function isTrunkFolded(): boolean {
-  const samples = state.foldHistory.slice(-60)
-  if (samples.length < MIN_SAMPLES) return false
-  const values = samples.map((s) => s.v)
-  const lo = Math.min(...values)
-  const hi = Math.max(...values)
-  const range = hi - lo
-  // Without a real forward fold there is no rowing catch, whatever the arms do.
-  if (range < MIN_FOLD_RANGE) return false
-  const p = Math.min(1, Math.max(0, (values[values.length - 1] - lo) / range))
-  return p >= 0.55
+function currentPosture(side: 'left' | 'right'): PostureState {
+  const armVals = state.reachHistory
+    .filter((s) => s.side === side)
+    .slice(-60)
+    .map((s) => s.reach)
+  const trunkVals = state.foldHistory.slice(-60).map((s) => s.v)
+  const legVals = state.legHistory.slice(-60).map((s) => s.v)
+
+  const pArm = armVals.length >= MIN_SAMPLES
+    ? normalizeRange(armVals, armVals[armVals.length - 1], MIN_REACH_RANGE)
+    : Number.NaN
+  const pTrunk = trunkVals.length >= MIN_SAMPLES
+    ? normalizeRange(trunkVals, trunkVals[trunkVals.length - 1], MIN_FOLD_RANGE)
+    : Number.NaN
+  const pLegRaw = legVals.length >= MIN_SAMPLES
+    ? normalizeRange(legVals, legVals[legVals.length - 1], MIN_LEG_RANGE)
+    : Number.NaN
+  // Leg flexion reads "compressed = 0" from raw knee height, so invert it.
+  const pLeg = Number.isNaN(pLegRaw) ? Number.NaN : 1 - pLegRaw
+
+  return {
+    pArm,
+    pTrunk,
+    pLeg,
+    armPrev: armVals.length >= MIN_SAMPLES
+      ? normalizeRange(armVals, lagValue(armVals, TREND_LAG, armVals[armVals.length - 1]), MIN_REACH_RANGE)
+      : Number.NaN,
+    legPrev: legVals.length >= MIN_SAMPLES
+      ? normalizeRange(legVals, lagValue(legVals, TREND_LAG, legVals[legVals.length - 1]), MIN_LEG_RANGE)
+      : Number.NaN,
+  }
 }
+
+/**
+ * Professional stroke machine. A phase is decided by the COMBINED posture:
+ * only when the arms are extended AND the trunk is folded AND the legs are
+ * compressed do we call it a catch (entry). Everything less is drive/pull,
+ * broken arm bend = finish (exit), arm re-extension = recovery — the exact
+ * "gambe -> busto -> braccia" / reverse sequence from the technique.
+ */
+function classifyPhase(p: PostureState): StrokePhase {
+  if (!Number.isFinite(p.pArm)) return 'none'
+  if (Number.isNaN(p.pLeg) || Number.isNaN(p.pTrunk)) return 'none'
+
+  if (p.pArm >= ARM_EXTENDED && p.pLeg >= LEG_COMPRESSED && p.pTrunk >= TRUNK_FOLDED) {
+    return 'entry'
+  }
+  if (p.pArm >= ARM_EXTENDED) return 'pull'
+  if (p.pArm <= ARM_BENT) return 'exit'
+
+  // Arms are moving: opening -> recovery, closing -> pull.
+  if (p.pArm - p.armPrev >= 0.08) return 'recovery'
+  if (p.pArm - p.armPrev <= -0.08) return 'pull'
+  return 'none'
+}
+
+function flagArmsFirst(p: PostureState): void {
+  // "Tirare subito di braccia": arms start bending while the legs are still
+  // compressed (push comes from the legs first).
+  if (p.pArm <= ARM_EXTENDED - 0.2 && p.pArm > ARM_BENT && p.pLeg >= LEG_COMPRESSED) {
+    if (!state.pendingErrors.includes('arms-first')) {
+      state.pendingErrors.push('arms-first')
+    }
+  }
+}
+
+function flagKneesEarly(p: PostureState): void {
+  // "Piegare le ginocchia troppo presto": legs start compressing during the
+  // recovery while the hands have not yet passed the knees (arms still bent).
+  const legsRising = p.pLeg - p.legPrev >= 0.12
+  if (p.pArm < 0.7 && legsRising && state.currentPhase === 'recovery') {
+    if (!state.pendingErrors.includes('knees-early')) {
+      state.pendingErrors.push('knees-early')
+    }
+  }
+}
+
+// ---- Public API ------------------------------------------------------------
 
 export interface StrokeDetectorOutput {
   currentPhase: StrokePhase
@@ -191,34 +285,44 @@ export function processFrame(
 
   const lm = result.landmarks[0]
   const side = detectDominantSide(result)
-  const torsoWidth = Math.abs(
-    lm[POSE_LANDMARKS.LEFT_SHOULDER].x -
-      lm[POSE_LANDMARKS.RIGHT_SHOULDER].x
-  ) || 0.001
+  const torsoWidth =
+    Math.abs(
+      lm[POSE_LANDMARKS.LEFT_SHOULDER].x -
+        lm[POSE_LANDMARKS.RIGHT_SHOULDER].x
+    ) || 0.001
+
   const reach = depthReach(lm, side, torsoWidth)
   const fold = trunkFoldValue(lm, torsoWidth)
+  const legFlex = legFlexValue(lm)
 
   // Depth unavailable: hold the machine so a few bad frames don't reset it.
-  if (!isFinite(reach) || !isFinite(fold)) return stale
+  if (!isFinite(reach) || !isFinite(fold) || !isFinite(legFlex)) return stale
 
-  // EMA smoothing: the depth channel is noisier than x/y.
-  const base = state.emaReach[side] || reach
-  const ema = base * 0.65 + reach * 0.35
-  state.emaReach[side] = ema
-  state.reachHistory.push({ reach: ema, timestamp: timestampMs, side })
+  // EMA smoothing of all three channels.
+  const eReach = (state.emaReach[side] || reach) * 0.65 + reach * 0.35
+  state.emaReach[side] = eReach
+  state.reachHistory.push({ reach: eReach, timestamp: timestampMs, side })
 
   state.emaFold = state.emaFold === 0 ? fold : state.emaFold * 0.65 + fold * 0.35
   state.foldHistory.push({ v: state.emaFold, timestamp: timestampMs })
 
+  state.emaLeg = state.emaLeg === 0 ? legFlex : state.emaLeg * 0.65 + legFlex * 0.35
+  state.legHistory.push({ v: state.emaLeg, timestamp: timestampMs })
+
   const cutoff = timestampMs - historyDurationMs
   state.reachHistory = state.reachHistory.filter((w) => w.timestamp > cutoff)
   state.foldHistory = state.foldHistory.filter((w) => w.timestamp > cutoff)
+  state.legHistory = state.legHistory.filter((w) => w.timestamp > cutoff)
 
-  const newPhase = detectPhaseReach(side)
+  const p = currentPosture(side)
 
-  // Transient/insufficient signal: keep the current phase (and the
-  // recovery->entry machine) intact.
+  // Professional errors, detected live on the sequence of postures.
+  flagArmsFirst(p)
+  flagKneesEarly(p)
+
+  let newPhase = classifyPhase(p)
   if (newPhase === 'none') {
+    // Transient/insufficient signal: keep the machine intact rather than reset.
     if (state.currentPhase === 'none') state.currentSide = side
     return stale
   }
@@ -226,14 +330,9 @@ export function processFrame(
   let newStrokeDetected = false
   let lastStroke: StrokeCycle | undefined
 
-  // One vogata is counted when the hands finish their extension (recovery) and
-  // reach full extension (catch) again — that is the start of the next drive —
-  // AND the trunk is really folded forward (a rowing catch, not arms only).
-  if (
-    state.currentPhase === 'recovery' &&
-    (newPhase === 'entry' || newPhase === 'pull') &&
-    isTrunkFolded()
-  ) {
+  // One vogata is counted ONLY at the full catch posture: arms extended AND
+  // trunk folded AND legs compressed. Arm-only or arm+trunk moves never count.
+  if (state.currentPhase === 'recovery' && newPhase === 'entry') {
     const cycleDuration = timestampMs - state.cycleStart
     if (
       cycleDuration >= minStrokeDurationMs &&
@@ -256,7 +355,9 @@ export function processFrame(
         phase: newPhase,
         durationMs: cycleDuration,
         dominantSide: state.currentSide,
+        sequenceErrors: [...state.pendingErrors],
       }
+      state.pendingErrors = []
       newStrokeDetected = true
     }
     state.cycleStart = timestampMs

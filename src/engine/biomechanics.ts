@@ -228,6 +228,7 @@ export function computeFullStrokeMetrics(
       exit: strokeDurationMs * 0.15,
       recovery: strokeDurationMs * 0.25,
     },
+    sequenceErrors: [],
   }
   return metrics
 }

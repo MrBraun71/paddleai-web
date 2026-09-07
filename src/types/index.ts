@@ -22,6 +22,7 @@ export interface StrokeCycle {
   phase: StrokePhase
   durationMs: number
   dominantSide: 'left' | 'right'
+  sequenceErrors?: string[]
 }
 
 export interface StrokeMetrics {
@@ -42,6 +43,7 @@ export interface StrokeMetrics {
   pullRatio: number
   jerkIndex: number
   phaseDuration: { entry: number; pull: number; exit: number; recovery: number }
+  sequenceErrors: string[]
 }
 
 export interface SQIBreakdown {

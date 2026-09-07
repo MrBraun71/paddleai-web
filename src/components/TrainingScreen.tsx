@@ -498,6 +498,8 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
                   e.currentStrokeStart,
                   time
                 )
+                metrics.sequenceErrors =
+                  strokeDetection.lastStroke?.sequenceErrors ?? []
                 e.strokes.push(metrics)
 
                 const recent = e.strokes.slice(-20)
