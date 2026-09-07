@@ -110,6 +110,9 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   const [poseResult, setPoseResult] = useState<PoseLandmarkerResult | null>(null)
   const [phase, setPhase] = useState<StrokePhase>('none')
   const [feedbackMsg, setFeedbackMsg] = useState<FeedbackMessage | null>(null)
+  // Aspect ratio (w/h) of the live camera frame, used to size the video
+  // container so the normalized skeleton landmarks align with the pixels.
+  const [videoAspect, setVideoAspect] = useState<number | null>(null)
 
   // ---- Diagnostic state (helps identify "no skeleton" root cause) ----
   const [debug, setDebug] = useState<{
@@ -285,6 +288,10 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
         })
         if (cancelled) return
         await video.play().catch(() => {})
+
+        const w = video.videoWidth
+        const h = video.videoHeight
+        if (w && h) setVideoAspect(w / h)
 
         engineRef.current.startTime = performance.now()
         resetStrokeDetector()
@@ -605,7 +612,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
       {/* Main content */}
       <div className="flex-1 flex flex-col lg:flex-row gap-3 p-3 overflow-hidden">
         {/* Video area */}
-        <div className="flex-1 relative min-h-[300px] lg:min-h-0 flex flex-col">
+        <div className="flex-1 relative min-h-[300px] lg:min-h-0 flex items-center justify-center">
           {cameraError && (
             <div className="absolute inset-0 z-20 flex items-center justify-center bg-slate-950/95 rounded-xl">
               <div className="text-center p-6">
@@ -646,7 +653,10 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
             </div>
           )}
 
-          <div className="relative flex-1 bg-black rounded-xl overflow-hidden">
+          <div
+            className="relative w-full max-w-full bg-black rounded-xl overflow-hidden"
+            style={{ aspectRatio: videoAspect ?? 4 / 3 }}
+          >
             <video
               ref={videoRef}
               playsInline

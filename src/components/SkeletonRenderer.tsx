@@ -90,7 +90,7 @@ const SkeletonRenderer: React.FC<Props> = ({ result, phase, width, height }) => 
   return (
     <canvas
       ref={canvasRef}
-      style={{ width, height }}
+      style={{ width: '100%', height: '100%' }}
       className="absolute inset-0 pointer-events-none"
     />
   )
