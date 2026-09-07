@@ -689,6 +689,9 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               {debug.app} | {debug.model}
               <br />
               LM:{debug.lm} VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
+              <br />
+              <span className="text-green-400">polso sx=verde</span>{' '}
+              <span className="text-rose-400">polso dx=rosa</span>
             </div>
 
             {/* Feedback overlay on video (mobile) */}
