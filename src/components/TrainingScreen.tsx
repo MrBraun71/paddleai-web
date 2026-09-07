@@ -29,6 +29,7 @@ import {
   primeSpeech,
   speak,
 } from '../engine/feedback'
+import { POSE_LANDMARKS } from '../types'
 import type {
   StrokeMetrics,
   SQIBreakdown,
@@ -132,7 +133,37 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     app: string
     model: string
     detMs: number
-  }>({ lm: -1, vs: '?', fps: 0, app: 'init', model: '-', detMs: 0 })
+    sym: number
+    knee: number
+    hand: number
+  }>({
+    lm: -1,
+    vs: '?',
+    fps: 0,
+    app: 'init',
+    model: '-',
+    detMs: 0,
+    sym: 0,
+    knee: 0,
+    hand: 0,
+  })
+
+  // Live buffers for the professional analysis diagnostics (symmetry grid,
+  // knee flare, handle-path waviness) — updated per inference, read by the
+  // 1s debug ticker.
+  const diagRef = useRef<{
+    centers: number[]
+    kneeEma: number
+    handEma: number
+    wristL: { x: number; y: number }[]
+    wristR: { x: number; y: number }[]
+  }>({
+    centers: [],
+    kneeEma: 0,
+    handEma: 0,
+    wristL: [],
+    wristR: [],
+  })
 
   // Ref mirror of appState for the debug ticker inside the rAF loop
   const appStateRef = useRef(appState)
@@ -424,6 +455,24 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           app: appStateRef.current,
         }))
 
+        // Professional analysis summary for the debug overlay:
+        // SYM = lateral oscillation of the median axis (%), KNEE = flare EMA (%), MAN = handle-path waviness (%).
+        const d = diagRef.current
+        const cs = d.centers
+        let sym = 0
+        if (cs.length >= 10) {
+          const mean = cs.reduce((a, b) => a + b, 0) / cs.length
+          sym =
+            Math.sqrt(cs.reduce((acc, c) => acc + (c - mean) ** 2, 0) / cs.length) *
+            100
+        }
+        setDebug((x) => ({
+          ...x,
+          sym: Math.round(sym * 10) / 10,
+          knee: Math.round(d.kneeEma * 10) / 10,
+          hand: Math.round(d.handEma * 10) / 10,
+        }))
+
         // Auto-downgrade: if the model is too slow for this device, switch to a
         // lighter one after a 4s warm-up so the webcam feed never freezes.
         const inf = infRef.current
@@ -473,6 +522,59 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           if (result && result.landmarks && result.landmarks.length > 0) {
             setDebug((d) => ({ ...d, lm: result.landmarks.length }))
             setPoseResult(result)
+
+            // ---- Professional analysis diagnostics (symmetry / knees / handle) ----
+            const d = diagRef.current
+            const lm0 = result.landmarks[0]
+            const lSh = lm0[POSE_LANDMARKS.LEFT_SHOULDER]
+            const rSh = lm0[POSE_LANDMARKS.RIGHT_SHOULDER]
+            if (lSh && rSh) {
+              d.centers.push((lSh.x + rSh.x) / 2)
+              if (d.centers.length > 60) d.centers.shift()
+              const torsoW = Math.abs(lSh.x - rSh.x) || 0.001
+              if (torsoW > 0.001) {
+                let flare = 0
+                const lh = lm0[POSE_LANDMARKS.LEFT_HIP]
+                const rh = lm0[POSE_LANDMARKS.RIGHT_HIP]
+                const lk = lm0[POSE_LANDMARKS.LEFT_KNEE]
+                const rk = lm0[POSE_LANDMARKS.RIGHT_KNEE]
+                if (lk && lh)
+                  flare = Math.max(flare, Math.abs(lk.x - lh.x) / torsoW)
+                if (rk && rh)
+                  flare = Math.max(flare, Math.abs(rk.x - rh.x) / torsoW)
+                const flarePct = flare * 100
+                d.kneeEma = d.kneeEma === 0 ? flarePct : d.kneeEma * 0.7 + flarePct * 0.3
+              }
+            }
+            const wristFor = (buf: { x: number; y: number }[]): number => {
+              const p = buf.slice(-40)
+              if (p.length < 8) return 0
+              const ax = p[0].x
+              const ay = p[0].y
+              const bx = p[p.length - 1].x
+              const by = p[p.length - 1].y
+              const chord = Math.hypot(bx - ax, by - ay)
+              if (chord < 1e-4) return 0
+              let sum = 0
+              for (const q of p) {
+                const t =
+                  ((q.x - ax) * (bx - ax) + (q.y - ay) * (by - ay)) /
+                  (chord * chord)
+                const tx = ax + t * (bx - ax)
+                const ty = ay + t * (by - ay)
+                sum += Math.hypot(q.x - tx, q.y - ty)
+              }
+              return (sum / p.length / chord) * 100
+            }
+            for (const idx of [POSE_LANDMARKS.LEFT_WRIST, POSE_LANDMARKS.RIGHT_WRIST]) {
+              const kp = lm0[idx]
+              if (!kp || (kp.visibility ?? 0) < 0.3) continue
+              const buf = idx === POSE_LANDMARKS.LEFT_WRIST ? d.wristL : d.wristR
+              buf.push({ x: kp.x, y: kp.y })
+              if (buf.length > 40) buf.shift()
+            }
+            const wav = Math.max(wristFor(d.wristL), wristFor(d.wristR))
+            d.handEma = d.handEma === 0 ? wav : d.handEma * 0.7 + wav * 0.3
 
             const strokeDetection = processStrokeFrame(result, time)
             setPhase(strokeDetection.currentPhase)
@@ -702,8 +804,13 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               <br />
               LM:{debug.lm} VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
               <br />
+              SYM:{debug.sym} KNEE:{debug.knee} MAN:{debug.hand}
+              <br />
               <span className="text-green-400">polso sx=verde</span>{' '}
               <span className="text-rose-400">polso dx=rosa</span>
+              <br />
+              <span className="text-sky-300">griglia=simmetria</span>{' '}
+              <span className="text-amber-400">ginocchia=flare</span>
             </div>
 
             {/* Feedback overlay on video (mobile) */}

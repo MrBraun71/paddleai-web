@@ -17,11 +17,38 @@ function dist2D(a: [number, number], b: [number, number]): number {
   return Math.sqrt((a[0] - b[0]) ** 2 + (a[1] - b[1]) ** 2)
 }
 
+/**
+ * Handle-path waviness: how much the wrist path (shape of the manubrio line)
+ * deviates from the ideal straight chord between its start and end points.
+ * High values = wavy motions / hands "jumping" over the knees.
+ * Returns a percentage (deviation / chord length).
+ */
+function pathWaviness(pts: { x: number; y: number }[]): number {
+  const p = pts.slice(-40)
+  if (p.length < 8) return 0
+  const ax = p[0].x
+  const ay = p[0].y
+  const bx = p[p.length - 1].x
+  const by = p[p.length - 1].y
+  const chord = Math.hypot(bx - ax, by - ay)
+  if (chord < 1e-4) return 0
+  let sum = 0
+  for (const q of p) {
+    const t =
+      ((q.x - ax) * (bx - ax) + (q.y - ay) * (by - ay)) / (chord * chord)
+    const tx = ax + t * (bx - ax)
+    const ty = ay + t * (by - ay)
+    sum += Math.hypot(q.x - tx, q.y - ty)
+  }
+  return (sum / p.length / chord) * 100
+}
+
 interface BiomechanicsState {
   wristHistoryLeft: { x: number; y: number; t: number }[]
   wristHistoryRight: { x: number; y: number; t: number }[]
   headHistory: { x: number; y: number }[]
   shoulderHistory: { yLeft: number; yRight: number }[]
+  centerXHistory: number[]
   trunkHistory: { angle: number }[]
   strokeAmplitudes: number[]
   lastStrokeTimestamp: number
@@ -32,6 +59,7 @@ const bioState: BiomechanicsState = {
   wristHistoryRight: [],
   headHistory: [],
   shoulderHistory: [],
+  centerXHistory: [],
   trunkHistory: [],
   strokeAmplitudes: [],
   lastStrokeTimestamp: 0,
@@ -42,6 +70,7 @@ export function resetBiomechanics(): void {
   bioState.wristHistoryRight = []
   bioState.headHistory = []
   bioState.shoulderHistory = []
+  bioState.centerXHistory = []
   bioState.trunkHistory = []
   bioState.strokeAmplitudes = []
   bioState.lastStrokeTimestamp = 0
@@ -72,9 +101,50 @@ export function processFrame(
     yLeft: lShoulder.y,
     yRight: rShoulder.y,
   })
+  const shoulderCenterX = (lShoulder.x + rShoulder.x) / 2
+  bioState.centerXHistory.push(shoulderCenterX)
 
   if (bioState.headHistory.length > 300) bioState.headHistory.shift()
   if (bioState.shoulderHistory.length > 300) bioState.shoulderHistory.shift()
+  if (bioState.centerXHistory.length > 300) bioState.centerXHistory.shift()
+
+  // Lateral oscillation of the median axis (symmetry grid): std of the
+  // shoulder-center x over the recent window, in per-mille for readability.
+  const recentCenters = bioState.centerXHistory.slice(-40)
+  let lateralOscillation = 0
+  if (recentCenters.length > 10) {
+    const mean =
+      recentCenters.reduce((s, c) => s + c, 0) / recentCenters.length
+    lateralOscillation =
+      Math.sqrt(
+        recentCenters.reduce((s, c) => s + (c - mean) ** 2, 0) /
+          recentCenters.length
+      ) * 100
+  }
+
+  // Knee flaring: how far each patella sits laterally from its hip, as a
+  // percentage of the shoulder width. Big values during the compression =
+  // knees opening outward (poor mobility / routing around the belly).
+  const torsoWidth = Math.abs(lShoulder.x - rShoulder.x) || 0.001
+  let kneeFlareIndex = 0
+  if (torsoWidth > 0.001) {
+    const lh = lm[POSE_LANDMARKS.LEFT_HIP]
+    const rh = lm[POSE_LANDMARKS.RIGHT_HIP]
+    const lk = lm[POSE_LANDMARKS.LEFT_KNEE]
+    const rk = lm[POSE_LANDMARKS.RIGHT_KNEE]
+    if (lk && lh) {
+      kneeFlareIndex = Math.max(
+        kneeFlareIndex,
+        (Math.abs(lk.x - lh.x) / torsoWidth) * 100
+      )
+    }
+    if (rk && rh) {
+      kneeFlareIndex = Math.max(
+        kneeFlareIndex,
+        (Math.abs(rk.x - rh.x) / torsoWidth) * 100
+      )
+    }
+  }
 
   const hipCenterX = (lHip.x + rHip.x) / 2
   const hipCenterY = (lHip.y + rHip.y) / 2
@@ -115,6 +185,7 @@ export function processFrame(
   if (hist.length > 300) hist.shift()
 
   const recentHist = hist.slice(-60)
+  const handleWaviness = pathWaviness(recentHist)
   let strokeAmplitude = 0
   if (recentHist.length > 5) {
     const xs = recentHist.map((h) => h.x)
@@ -191,6 +262,9 @@ export function processFrame(
     armExtensionRatio: armExtension,
     jerkIndex,
     pullRatio: 0.6,
+    lateralOscillation,
+    kneeFlareIndex,
+    handleWaviness,
   }
 }
 
@@ -229,6 +303,9 @@ export function computeFullStrokeMetrics(
       recovery: strokeDurationMs * 0.25,
     },
     sequenceErrors: [],
+    lateralOscillation: avg(partialMetrics.map((m) => m.lateralOscillation ?? 0)),
+    kneeFlareIndex: avg(partialMetrics.map((m) => m.kneeFlareIndex ?? 0)),
+    handleWaviness: avg(partialMetrics.map((m) => m.handleWaviness ?? 0)),
   }
   return metrics
 }

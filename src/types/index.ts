@@ -44,6 +44,9 @@ export interface StrokeMetrics {
   jerkIndex: number
   phaseDuration: { entry: number; pull: number; exit: number; recovery: number }
   sequenceErrors: string[]
+  lateralOscillation: number
+  kneeFlareIndex: number
+  handleWaviness: number
 }
 
 export interface SQIBreakdown {
