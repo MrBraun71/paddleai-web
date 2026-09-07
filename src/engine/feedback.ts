@@ -265,6 +265,22 @@ let speechSynth: SpeechSynthesis | null = null
 let italianVoice: SpeechSynthesisVoice | null = null
 let keepAliveTimer: ReturnType<typeof setInterval> | null = null
 let userUnlocked = false
+let fallbackEngine = false
+
+// iOS Chrome/Firefox do NOT expose speechSynthesis at all (WebKit restriction
+// on third-party browsers, no TTSEngine). We then play an Italian TTS audio
+// clip instead.
+const SILENT_WAV =
+  'data:audio/wav;base64,UklGRiQAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQAAAAA='
+let fallbackAudio: HTMLAudioElement | null = null
+
+function hasNativeSpeech(): boolean {
+  return (
+    typeof window !== 'undefined' &&
+    !!window.speechSynthesis &&
+    typeof window.speechSynthesis.speak === 'function'
+  )
+}
 
 function isIOS(): boolean {
   if (typeof navigator === 'undefined') return false
@@ -272,6 +288,32 @@ function isIOS(): boolean {
     /iPad|iPhone|iPod/.test(navigator.userAgent) ||
     (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1)
   )
+}
+
+function ttsUrl(text: string): string {
+  return (
+    'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=it&q=' +
+    encodeURIComponent(text)
+  )
+}
+
+function speakFallback(text: string): void {
+  speakCount++
+  try {
+    if (fallbackAudio) {
+      fallbackAudio.pause()
+      fallbackAudio.src = ''
+    }
+    const audio = new Audio(ttsUrl(text))
+    fallbackAudio = audio
+    audio.volume = 1
+    audio.onerror = () => console.warn('VogaAI: TTS audio fallback failed', text)
+    void audio.play().catch(() => {
+      /* noop */
+    })
+  } catch {
+    /* noop */
+  }
 }
 
 function pickItalianVoice(synth: SpeechSynthesis): void {
@@ -283,7 +325,13 @@ function pickItalianVoice(synth: SpeechSynthesis): void {
 }
 
 export function initSpeech(): void {
-  if (typeof window === 'undefined' || !window.speechSynthesis) return
+  if (typeof window === 'undefined') return
+  if (!hasNativeSpeech()) {
+    // No SpeechSynthesis (e.g. iOS Chrome): a real <audio> fallback is used.
+    fallbackEngine = true
+    return
+  }
+  fallbackEngine = false
   speechSynth = window.speechSynthesis
   pickItalianVoice(speechSynth)
 
@@ -329,10 +377,24 @@ export function initSpeech(): void {
 
 // iOS/Safari only allows speechSynthesis.speak() when it's triggered from a
 // user gesture. Call this from a tap/click handler (e.g. the "Start" button or
-// a dedicated audio-unlock button) to unlock the audio API. NOTE: never
-// cancel() here — on iOS a cancel right before speak silences the synth.
+// a dedicated audio-unlock button) to unlock the audio API. When the native
+// API is absent we unlock HTMLAudio playback instead. NOTE: never cancel()
+// here — on iOS a cancel right before speak silences the synth.
 export function primeSpeech(): void {
-  if (typeof window === 'undefined' || !window.speechSynthesis) return
+  if (typeof window === 'undefined') return
+  if (!hasNativeSpeech()) {
+    try {
+      const a = new Audio(SILENT_WAV)
+      a.volume = 0
+      void a.play().catch(() => {
+        /* noop */
+      })
+      userUnlocked = true
+    } catch {
+      /* noop */
+    }
+    return
+  }
   try {
     const synth = window.speechSynthesis
     synth.getVoices()
@@ -355,6 +417,7 @@ export function getSpeechStatus(): {
   unlocked: boolean
   speaking: boolean
   paused: boolean
+  engine: 'native' | 'audio' | 'none'
 } {
   const synthed = typeof window !== 'undefined' && window.speechSynthesis
   return {
@@ -362,10 +425,15 @@ export function getSpeechStatus(): {
     unlocked: userUnlocked,
     speaking: !!synthed && (window.speechSynthesis.speaking ?? false),
     paused: !!synthed && (window.speechSynthesis.paused ?? false),
+    engine: hasNativeSpeech() ? 'native' : 'audio',
   }
 }
 
 export function speak(text: string): void {
+  if (fallbackEngine || !hasNativeSpeech()) {
+    speakFallback(text)
+    return
+  }
   if (!speechSynth) return
   if (!italianVoice) pickItalianVoice(speechSynth)
   speakCount++

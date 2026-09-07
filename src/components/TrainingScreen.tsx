@@ -143,6 +143,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     knee: number
     hand: number
     spk: number
+    vx: string
   }>({
     lm: 0,
     vs: '?',
@@ -154,6 +155,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     knee: 0,
     hand: 0,
     spk: 0,
+    vx: '-',
   })
 
   // Live buffers for the professional analysis diagnostics (symmetry grid,
@@ -483,6 +485,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           knee: Math.round(d.kneeEma * 10) / 10,
           hand: Math.round(d.handEma * 10) / 10,
           spk: getSpeechStatus().count,
+          vx: getSpeechStatus().engine,
         }))
 
         // Auto-downgrade: if the model is too slow for this device, switch to a
@@ -748,14 +751,14 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               setKneeMode(next)
               setKneeControl(next)
             }}
-            title="Controllo ginocchia: Incrocio come principiante / Proxy come professionale"
-            className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition-colors ${
+            title="Controllo ginocchia: OFF = principiante (no blocco del conteggio), PRO = professionale"
+            className={`px-1.5 py-1 rounded text-[10px] font-bold whitespace-nowrap transition-colors ${
               kneeMode === 'professional'
                 ? 'bg-sky-600 hover:bg-sky-500 text-white'
                 : 'bg-slate-700 hover:bg-slate-600 text-slate-200'
             }`}
           >
-            {kneeMode === 'professional' ? '🦵 Ginocchia PRO' : '🦵 Ginocchia OFF'}
+            {kneeMode === 'professional' ? '🦵PRO' : '🦵OFF'}
           </button>
           <button
             onClick={handlePause}
@@ -837,7 +840,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               <br />
               LM:{debug.lm}/33 VS:{debug.vs} FPS:{debug.fps} INF:{debug.detMs}ms
               <br />
-              SYM:{debug.sym} KNEE:{debug.knee} MAN:{debug.hand} SPK:{debug.spk}
+              SYM:{debug.sym} KNEE:{debug.knee} MAN:{debug.hand} SPK:{debug.spk}({debug.vx})
               <br />
               <span className="text-green-400">polso sx=verde</span>{' '}
               <span className="text-rose-400">polso dx=rosa</span>
