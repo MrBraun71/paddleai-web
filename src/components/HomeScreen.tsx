@@ -39,7 +39,7 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
     {
       id: 'velocita' as const,
       label: 'Velocità',
-      desc: 'Stroke rate elevato',
+      desc: 'Ritmo di voga elevato',
       icon: '⚡',
     },
   ]
@@ -52,7 +52,7 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
             <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-sky-400 to-blue-600 flex items-center justify-center">
               <Activity size={20} className="text-white" />
             </div>
-            <span className="text-lg font-bold text-white">PaddleAI</span>
+            <span className="text-lg font-bold text-white">VogaAI</span>
           </div>
           <span className="text-xs text-slate-400">AI Coach</span>
         </div>
@@ -81,7 +81,7 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
             <span className="text-sky-400">AI personale</span> in acqua
           </h1>
           <p className="text-sm text-slate-400 mt-2">
-            Analizza la tua pagaiata in tempo reale con la fotocamera del telefono
+            Analizza la tua vogata in tempo reale con la fotocamera del telefono
           </p>
         </div>
 
@@ -92,8 +92,8 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
           </div>
           <ol className="space-y-2 text-sm text-slate-300">
             <li className="flex gap-2"><span className="text-sky-400 font-bold">1.</span>Posiziona il telefono davanti a te, webcam frontale</li>
-            <li className="flex gap-2"><span className="text-sky-400 font-bold">2.</span>Inquadra busto, spalle e braccia</li>
-            <li className="flex gap-2"><span className="text-sky-400 font-bold">3.</span>Inizia a pagaiare: l'AI valuta tecnica e fatica</li>
+            <li className="flex gap-2"><span className="text-sky-400 font-bold">2.</span>Inquadra busto, spalle e braccia (e il remo)</li>
+            <li className="flex gap-2"><span className="text-sky-400 font-bold">3.</span>Inizia a vogare: l'AI valuta tecnica e fatica</li>
             <li className="flex gap-2"><span className="text-sky-400 font-bold">4.</span>Ricevi feedback vocali in tempo reale</li>
           </ol>
         </div>
@@ -140,14 +140,14 @@ const HomeScreen: React.FC<Props> = ({ onStart }) => {
         <div className="bg-slate-900/60 rounded-xl border border-slate-800 p-3">
           <div className="text-xs text-slate-400 mb-2 font-medium">Metriche misurate in tempo reale</div>
           <div className="grid grid-cols-2 gap-1.5 text-xs text-slate-300">
-            <div>📐 Angolo di ingresso pala</div>
+            <div>📐 Angolo di attacco della pala</div>
             <div>🔄 Rotazione del tronco</div>
             <div>⚖️ Simmetria dx/sx</div>
             <div>💧 Fluidità del gesto</div>
-            <div>🎯 Stroke Quality Index</div>
+            <div>🎯 Stroke Quality Index (SQI)</div>
             <div>🥵 Indice di fatica</div>
-            <div>🔢 Stroke rate</div>
-            <div>📏 Ampiezza pagaiata</div>
+            <div>🔢 Ritmo di voga (colpi/min)</div>
+            <div>📏 Ampiezza della remata</div>
           </div>
         </div>
       </div>

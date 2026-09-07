@@ -57,7 +57,7 @@ const FeedbackOverlay: React.FC<Props> = ({ current }) => {
 
       {displayMsgs.length === 0 && (
         <div className="text-xs text-slate-500 italic">
-          In attesa di dati biomeccanici... Inizia a pagaiare
+          In attesa di dati biomeccanici... Inizia a vogare
         </div>
       )}
 

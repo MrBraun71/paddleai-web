@@ -48,7 +48,7 @@ const RecapScreen: React.FC<Props> = ({ session, onHome }) => {
     ...(sqi && sqi.symmetry > 80 ? [{ text: 'Ottima simmetria destra/sinistra' }] : []),
     ...(sqi && sqi.posture > 80 ? [{ text: 'Postura stabile e controllata' }] : []),
     ...(session.strokeCount > 0
-      ? [{ text: `${session.strokeCount} pagaiate registrate` }]
+      ? [{ text: `${session.strokeCount} vogate registrate` }]
       : []),
     ...(positive > 3
       ? [{ text: 'Elevata consistenza durante la sessione' }]
@@ -60,7 +60,7 @@ const RecapScreen: React.FC<Props> = ({ session, onHome }) => {
       ? [{ text: 'Fluidità del movimento da migliorare' }]
       : []),
     ...(sqi && sqi.technique < 70
-      ? [{ text: 'Angolo di ingresso/uscita pala non ottimale' }]
+      ? [{ text: 'Angolo di attacco/finale pala non ottimale' }]
       : []),
     ...(session.fatigueIndex > 40
       ? [{ text: `Tecnica in decadimento verso fine sessione (fatigue ${Math.round(session.fatigueIndex)}%)` }]
@@ -69,10 +69,10 @@ const RecapScreen: React.FC<Props> = ({ session, onHome }) => {
 
   const tips = [
     ...(sqi && sqi.fluidity < 70
-      ? [{ text: 'Focalizza sul rilassare il polso durante la recovery: riduce il jerk' }]
+      ? [{ text: 'Focalizza sul rilassare il polso durante il recupero: riduce il jerk' }]
       : []),
     ...(sqi && sqi.technique < 70
-      ? [{ text: 'Esercizio: pagaiata lenta con focus sull\'ingresso pala a 50°' }]
+      ? [{ text: 'Esercizio: vogata lenta con focus sull\'attacco della pala' }]
       : []),
     ...(session.fatigueIndex > 40
       ? [{ text: 'Integra intervalli: 4x500m con focus sulla costanza tecnica' }]
@@ -106,11 +106,11 @@ const RecapScreen: React.FC<Props> = ({ session, onHome }) => {
             </div>
             <div className="flex items-center gap-2 text-sm text-slate-300">
               <Award size={16} className="text-sky-400" />
-              Pagaiate: {session.strokeCount}
+              Vogate: {session.strokeCount}
             </div>
             <div className="flex items-center gap-2 text-sm text-slate-300">
               <TrendingUp size={16} className="text-sky-400" />
-              Stroke Rate: {Math.round(session.avgStrokeRate)} spm
+              Ritmo di voga: {Math.round(session.avgStrokeRate)} colpi/min
             </div>
             <div className="flex items-center gap-2 text-sm text-slate-300">
               <AlertCircle size={16} className="text-sky-400" />

@@ -44,6 +44,15 @@ interface Props {
 
 type AppState = 'initializing' | 'loading-model' | 'ready' | 'recording' | 'stopped'
 
+// Rowing phases (voga) labels shown in the UI.
+const PHASE_LABEL_IT: Record<StrokePhase, string> = {
+  entry: 'Attacco',
+  pull: 'Trazione',
+  exit: 'Finale',
+  recovery: 'Recupero',
+  none: '—',
+}
+
 // Model candidates, heaviest first. Order matters: we start with the highest
 // accuracy the device can handle and auto-downgrade (see loop) if inference
 // time is too high.
@@ -197,7 +206,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
     fatigue: engineRef.current.fatigue,
     amplitude: engineRef.current.amplitude,
     duration: ui.duration,
-    phase,
+    phase: PHASE_LABEL_IT[phase],
   }
 
   // ---- Load AI model (with fallback to lighter models / CPU) ----
@@ -597,7 +606,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
             }`}
           />
           <Activity size={18} className="text-sky-400" />
-          <span className="font-bold text-white">PaddleAI</span>
+          <span className="font-bold text-white">VogaAI</span>
         </div>
         <div className="text-sm font-mono text-slate-300">{mmss(ui.duration)}</div>
         <div className="flex gap-2">

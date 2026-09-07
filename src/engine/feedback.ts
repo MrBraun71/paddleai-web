@@ -95,8 +95,8 @@ const rules: FeedbackRule[] = [
   {
     id: 'CATCH_ANGLE_LOW',
     check: (m) => m.catchAngleDeg < 35,
-    messageIt: 'Inclina di più la pala all\'ingresso',
-    messageEn: 'Angle the paddle more at entry',
+    messageIt: 'Inclina di più la pala all\'attacco',
+    messageEn: 'Square the blade more at the catch',
     type: 'medium',
     category: 'technique',
     cooldownMs: 45000,
@@ -179,8 +179,8 @@ export function evaluateFeedback(
     lastInfoEmission = now
     return {
       id: 'INFO_RATE-' + now,
-      text: `Stroke rate: ${Math.round(currentRate)} al minuto`,
-      textEn: `Stroke rate: ${Math.round(currentRate)} per minute`,
+      text: `Ritmo di voga: ${Math.round(currentRate)} colpi al minuto`,
+      textEn: `Rating: ${Math.round(currentRate)} spm`,
       type: 'info',
       category: 'stats',
       timestamp: now,

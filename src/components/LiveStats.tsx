@@ -75,14 +75,14 @@ const LiveStatsPanel: React.FC<StatsPanelProps> = ({
 
       <div className="flex items-center justify-between">
         <div>
-          <div className="text-[10px] text-slate-400">STROKE RATE</div>
+          <div className="text-[10px] text-slate-400">RITMO (colpi/min)</div>
           <div className="text-xl font-bold text-sky-300">
             {Math.round(strokeRate)}
-            <span className="text-xs text-slate-500"> spm</span>
+            <span className="text-xs text-slate-500"> cpm</span>
           </div>
         </div>
         <div className="text-right">
-          <div className="text-[10px] text-slate-400">STROKES</div>
+          <div className="text-[10px] text-slate-400">VOGATE</div>
           <div className="text-xl font-bold text-slate-100">{strokeCount}</div>
         </div>
         <div className="text-right">

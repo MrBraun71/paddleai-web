@@ -1,7 +1,7 @@
-# PaddleAI Web — AI Coach per Canoa & Kayak
+# VogaAI Web — AI Coach Canottaggio (voga con i remi)
 
 Web app che usa la **webcam frontale** del telefono o tablet per valutare automaticamente
-la tecnica di pagaiata dell'atleta in tempo reale, generando un **Stroke Quality Index (SQI)**
+la tecnica di vogata dell'atleta in tempo reale, generando un **Stroke Quality Index (SQI)**
 e feedback vocali.
 
 **Tutto elaborato ON-DEVICE** nel browser: nessun video viene caricato online (privacy by design).
@@ -14,7 +14,7 @@ e feedback vocali.
 - 🤖 **Pose estimation** on-device con MediaPipe (33 keypoints, scheletro sovrapposto al video)
 - 🔄 **Stroke Cycle Detection**: segmentazione automatica entry → pull → exit → recovery
 - 📐 **Analisi biomeccanica** real-time: rotazione tronco, inclinazione, simmetria, ampiezza,
-  angolo di ingresso/uscita pala, fluidità (jerk), stabilità testa
+  angolo di attacco/finale della pala, fluidità (jerk), stabilità testa
 - 🎯 **Stroke Quality Index (SQI)**: indice proprietario 0-100 a 5 componenti
   (Postura 20%, Tecnica 25%, Simmetria 20%, Fluidità 15%, Costanza 20%)
 - 🔊 **Feedback vocali** in italiano (Web Speech API): "Riduci l'oscillazione del busto",
@@ -99,15 +99,15 @@ http://localhost:5173
 5. **Stop sessione** — Premi **"Stop"** per visualizzare il **riepilogo post-sessione** con
    SQI dettagliato, punti di forza, criticità e suggerimenti.
 
-### Come simulare la pagaiata senza essere in acqua
+### Come simulare la vogata senza essere in acqua
 
-Posizionati davanti alla webcam e fai movimenti simulati di pagaiata:
-- Muovi un **braccio in avanti e indietro** come se impugnassi una pagaia
-- Ruota il **busto** mantenendo i piedi fermi
-- Il sistema riconosce il ciclo di pagaiata (entry → pull → exit → recovery)
-- Dopo qualche stroke inizierai a vedere il **SQI** e i **feedback**
+Posizionati davanti alla webcam e fai movimenti simulati di vogata:
+- Muovi le **braccia avanti e indietro** come se impugnassi un remo
+- **Spingi con le gambe** e ruota il **busto** mantenendo i piedi fermi
+- Il sistema riconosce il ciclo di remata (attacco → trazione → finale → recupero)
+- Dopo qualche vogata inizierai a vedere il **SQI** e i **feedback**
 
-> 💡 **Suggerimento per il test**: usa una pagaia reale o un bastone lungo per rendere
+> 💡 **Suggerimento per il test**: usa un remo reale o un bastone lungo per rendere
 > il movimento più realistico e migliorare il riconoscimento.
 
 ### Comandi utili
@@ -201,4 +201,4 @@ MIT
 
 ---
 
-*Progetto demo del concept PaddleAI — AI Coach personale per canoe e kayak agonistico.*
+*Progetto demo del concept VogaAI — AI Coach personale per il canottaggio (voga con i remi).*
