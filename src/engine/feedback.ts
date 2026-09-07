@@ -292,6 +292,15 @@ function isIOS(): boolean {
 
 function ttsUrl(text: string): string {
   return (
+    'https://api.streamelements.com/kappa/v2/speech?voice=' +
+    encodeURIComponent('Google italiano (IT)') +
+    '&text=' +
+    encodeURIComponent(text)
+  )
+}
+
+function stalePagesTtsUrl(text: string): string {
+  return (
     'https://translate.google.com/translate_tts?ie=UTF-8&client=tw-ob&tl=it&q=' +
     encodeURIComponent(text)
   )
@@ -299,21 +308,27 @@ function ttsUrl(text: string): string {
 
 function speakFallback(text: string): void {
   speakCount++
-  try {
-    if (fallbackAudio) {
-      fallbackAudio.pause()
-      fallbackAudio.src = ''
+  const playUrl = (url: string, onFail: () => void): void => {
+    try {
+      if (fallbackAudio) {
+        fallbackAudio.pause()
+        fallbackAudio.src = ''
+      }
+      const audio = new Audio(url)
+      fallbackAudio = audio
+      audio.volume = 1
+      audio.onerror = () => {
+        console.warn('VogaAI: TTS audio fallback failed', url)
+        onFail()
+      }
+      void audio.play().catch(() => onFail())
+    } catch {
+      onFail()
     }
-    const audio = new Audio(ttsUrl(text))
-    fallbackAudio = audio
-    audio.volume = 1
-    audio.onerror = () => console.warn('VogaAI: TTS audio fallback failed', text)
-    void audio.play().catch(() => {
-      /* noop */
-    })
-  } catch {
-    /* noop */
   }
+  // Primary: StreamElements TTS (no key, Cloudflare CDN, works in the EU).
+  // Secondary: Google Translate endpoint (may be consent-blocked in the EU).
+  playUrl(ttsUrl(text), () => playUrl(stalePagesTtsUrl(text), () => {}))
 }
 
 function pickItalianVoice(synth: SpeechSynthesis): void {
