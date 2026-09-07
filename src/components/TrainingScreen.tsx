@@ -485,7 +485,7 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
           knee: Math.round(d.kneeEma * 10) / 10,
           hand: Math.round(d.handEma * 10) / 10,
           spk: getSpeechStatus().count,
-          vx: getSpeechStatus().engine,
+          vx: `${getSpeechStatus().engine}${getSpeechStatus().audioOk ? '✓' : '!'}`,
         }))
 
         // Auto-downgrade: if the model is too slow for this device, switch to a

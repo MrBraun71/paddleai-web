@@ -266,6 +266,14 @@ let italianVoice: SpeechSynthesisVoice | null = null
 let keepAliveTimer: ReturnType<typeof setInterval> | null = null
 let userUnlocked = false
 let fallbackEngine = false
+let lastAudioOk = false
+
+// iOS Chrome/Firefox expose a speechSynthesis object that never emits sound
+// (WebKit stub without a system TTS hook for third-party browsers). On iOS we
+// always prefer the HTMLAudio fallback instead.
+function mustUseFallback(): boolean {
+  return isIOS() || fallbackEngine || !hasNativeSpeech()
+}
 
 // iOS Chrome/Firefox do NOT expose speechSynthesis at all (WebKit restriction
 // on third-party browsers, no TTSEngine). We then play an Italian TTS audio
@@ -308,6 +316,7 @@ function stalePagesTtsUrl(text: string): string {
 
 function speakFallback(text: string): void {
   speakCount++
+  lastAudioOk = false
   const playUrl = (url: string, onFail: () => void): void => {
     try {
       if (fallbackAudio) {
@@ -317,11 +326,16 @@ function speakFallback(text: string): void {
       const audio = new Audio(url)
       fallbackAudio = audio
       audio.volume = 1
+      const ok = () => {
+        lastAudioOk = true
+      }
+      audio.oncanplay = ok
+      audio.ondurationchange = ok
       audio.onerror = () => {
         console.warn('VogaAI: TTS audio fallback failed', url)
         onFail()
       }
-      void audio.play().catch(() => onFail())
+      void audio.play().then(ok).catch(onFail)
     } catch {
       onFail()
     }
@@ -397,7 +411,7 @@ export function initSpeech(): void {
 // here — on iOS a cancel right before speak silences the synth.
 export function primeSpeech(): void {
   if (typeof window === 'undefined') return
-  if (!hasNativeSpeech()) {
+  if (!hasNativeSpeech() || isIOS()) {
     try {
       const a = new Audio(SILENT_WAV)
       a.volume = 0
@@ -433,6 +447,7 @@ export function getSpeechStatus(): {
   speaking: boolean
   paused: boolean
   engine: 'native' | 'audio' | 'none'
+  audioOk: boolean
 } {
   const synthed = typeof window !== 'undefined' && window.speechSynthesis
   return {
@@ -440,12 +455,13 @@ export function getSpeechStatus(): {
     unlocked: userUnlocked,
     speaking: !!synthed && (window.speechSynthesis.speaking ?? false),
     paused: !!synthed && (window.speechSynthesis.paused ?? false),
-    engine: hasNativeSpeech() ? 'native' : 'audio',
+    engine: mustUseFallback() ? 'audio' : 'native',
+    audioOk: lastAudioOk,
   }
 }
 
 export function speak(text: string): void {
-  if (fallbackEngine || !hasNativeSpeech()) {
+  if (mustUseFallback()) {
     speakFallback(text)
     return
   }
