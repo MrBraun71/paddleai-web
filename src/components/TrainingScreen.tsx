@@ -89,8 +89,18 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
   const [phase, setPhase] = useState<StrokePhase>('none')
   const [feedbackMsg, setFeedbackMsg] = useState<FeedbackMessage | null>(null)
 
+  // ---- Diagnostic state (helps identify "no skeleton" root cause) ----
+  const [debug, setDebug] = useState<{ lm: number; vs: string; fps: number }>({
+    lm: -1,
+    vs: '?',
+    fps: 0,
+  })
+
   const rafRef = useRef<number | null>(null)
   const lastVideoTimeRef = useRef(-1)
+
+  // Diagnostics
+  const statsRef = useRef({ frames: 0, lastLm: -1, lastT: 0, fps: 0 })
 
   // UI state that updates at low frequency (throttled)
   const [ui, setUi] = useState({
@@ -211,14 +221,20 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
       // Only run inference when a new video frame is available
       if (video.readyState >= 2 && video.currentTime !== lastVideoTimeRef.current) {
         lastVideoTimeRef.current = video.currentTime
+        const s = statsRef.current
+        s.frames++
+        if (time - s.lastT >= 1000) {
+          s.fps = Math.round((s.frames * 1000) / (time - s.lastT))
+          s.frames = 0
+          s.lastT = time
+          setDebug((d) => ({ ...d, vs: video.readyState.toString(), fps: s.fps }))
+        }
         try {
           const result = lm.detectForVideo(video, time)
           if (result && result.landmarks && result.landmarks.length > 0) {
-            setPoseResult((prev) => {
-              // Only update when landmark object actually changed (avoid re-render every frame)
-              if (prev === result) return prev
-              return result
-            })
+            statsRef.current.lastLm = result.landmarks.length
+            setDebug((d) => ({ ...d, lm: result.landmarks.length }))
+            setPoseResult(result)
 
             const strokeDetection = processStrokeFrame(result, time)
             setPhase(strokeDetection.currentPhase)
@@ -488,6 +504,11 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
               width={640}
               height={480}
             />
+
+            {/* Diagnostic overlay */}
+            <div className="absolute top-2 left-2 z-10 px-2 py-1 rounded bg-black/60 text-[10px] font-mono text-lime-300 pointer-events-none">
+              LM:{debug.lm} VS:{debug.vs} FPS:{debug.fps}
+            </div>
 
             {/* Feedback overlay on video (mobile) */}
             <div className="absolute bottom-3 left-3 right-3 z-10 pointer-events-none lg:hidden">
