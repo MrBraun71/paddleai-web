@@ -13,7 +13,7 @@ function postureScore(metrics: StrokeMetrics): number {
   const lean = normalize(metrics.trunkLeanDeg, 0, 20)
   const head = normalize(metrics.headStability, 0, 0.1)
   const asym = normalize(metrics.shoulderAsymmetryDeg, 0, 10)
-  return clamp(lean * 0.35 + (100 - head * 100) * 0.25 + (100 - asym) * 0.40, 0, 100)
+  return clamp(lean * 0.35 + (100 - head) * 0.25 + (100 - asym) * 0.4, 0, 100)
 }
 
 function techniqueScore(metrics: StrokeMetrics): number {
