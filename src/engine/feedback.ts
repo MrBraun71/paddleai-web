@@ -329,17 +329,18 @@ export function initSpeech(): void {
 
 // iOS/Safari only allows speechSynthesis.speak() when it's triggered from a
 // user gesture. Call this from a tap/click handler (e.g. the "Start" button or
-// a dedicated audio-unlock button) to unlock the audio API silently.
+// a dedicated audio-unlock button) to unlock the audio API. NOTE: never
+// cancel() here — on iOS a cancel right before speak silences the synth.
 export function primeSpeech(): void {
   if (typeof window === 'undefined' || !window.speechSynthesis) return
   try {
     const synth = window.speechSynthesis
-    synth.cancel()
     synth.getVoices()
     const silent = new SpeechSynthesisUtterance(' ')
-    silent.volume = 0
-    silent.rate = 5
+    silent.volume = 0.01
+    silent.rate = 10
     synth.speak(silent)
+    synth.resume()
     userUnlocked = true
   } catch {
     /* noop */
@@ -370,12 +371,13 @@ export function speak(text: string): void {
   speakCount++
   const iosDevice = isIOS()
   try {
-    // On iOS cancel() right before speak() is known to swallow the utterance:
-    // only cancel when there is actually a queue to replace (and not on the
-    // first speak after unlock). Android/Chrome keeps the cancel.
-    if (!iosDevice || speechSynth.speaking || speechSynth.pending) {
+    // Only cancel when there is an actual queue to replace. On iOS a cancel()
+    // right before speak() is known to silence the synth entirely.
+    if (!iosDevice && (speechSynth.speaking || speechSynth.pending)) {
       speechSynth.cancel()
     }
+    if (iosDevice) speechSynth.resume()
+
     const utter = new SpeechSynthesisUtterance(text)
     utter.lang = 'it-IT'
     if (italianVoice) utter.voice = italianVoice
@@ -388,6 +390,16 @@ export function speak(text: string): void {
         speechSynth?.resume()
       } catch {
         /* noop */
+      }
+    }
+    if (iosDevice) {
+      // iOS lets the synth drop to "suspended" right after an utterance ends.
+      utter.onend = () => {
+        try {
+          speechSynth?.resume()
+        } catch {
+          /* noop */
+        }
       }
     }
     utter.onerror = (e) => console.warn('VogaAI: speech error', e)

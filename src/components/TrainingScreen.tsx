@@ -730,15 +730,17 @@ const TrainingScreen: React.FC<Props> = ({ onComplete, onExit, voiceEnabled }) =
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 bg-slate-900/90 backdrop-blur border-b border-slate-800">
         <div className="flex items-center gap-2">
-          <div
-            className={`w-2.5 h-2.5 rounded-full ${
-              appState === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'
-            }`}
-          />
-          <Activity size={18} className="text-sky-400" />
-          <span className="font-bold text-white">VogaAI</span>
-        </div>
-        <div className="text-sm font-mono text-slate-300">{mmss(ui.duration)}</div>
+            <div
+              className={`w-2.5 h-2.5 rounded-full ${
+                appState === 'recording' ? 'bg-red-500 animate-pulse' : 'bg-slate-500'
+              }`}
+            />
+            <Activity size={18} className="text-sky-400" />
+            <div className="leading-tight">
+              <div className="font-bold text-white">VogaAI</div>
+              <div className="text-xs font-mono text-slate-400">{mmss(ui.duration)}</div>
+            </div>
+          </div>
         <div className="flex gap-2">
           <button
             onClick={() => {
